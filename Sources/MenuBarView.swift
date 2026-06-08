@@ -6,7 +6,6 @@ struct MenuBarPopoverContent: View {
     @State private var loveError: String?
     
     private var monitor: ScrobbleMonitor { appState.scrobbleMonitor }
-    private var stats: ScrobbleStatsManager { appState.statsManager }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -97,11 +96,11 @@ struct MenuBarPopoverContent: View {
             
             Divider()
             
-            // Stats Summary
+            // Stats Summary (from Last.fm API)
             HStack(spacing: 16) {
-                StatPill(value: "\(stats.todayCount)", label: "Today")
-                StatPill(value: "\(stats.weekCount)", label: "Week")
-                StatPill(value: "\(stats.monthCount)", label: "Month")
+                StatPill(value: "\(appState.menuBarTodayCount)", label: "7 Days")
+                StatPill(value: "\(appState.menuBarWeekCount)", label: "Month")
+                StatPill(value: "\(appState.menuBarMonthCount)", label: "3 Months")
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)

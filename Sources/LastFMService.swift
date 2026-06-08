@@ -150,4 +150,14 @@ class LastFMService {
             trackCount: response.user.trackCount
         )
     }
+    
+    // MARK: - Scrobble Counts (for menu bar stats)
+    
+    /// Get scrobble count for a specific period by summing top artists' playcounts.
+    func getScrobbleCount(username: String, period: String) async throws -> Int {
+        let url = URL(string: "\(baseURL)?method=user.gettopartists&user=\(username)&api_key=\(apiKey)&format=json&limit=50&period=\(period)")!
+        let (data, _) = try await session.data(from: url)
+        let response = try JSONDecoder().decode(TopArtistsResponse.self, from: data)
+        return response.topartists.artist.reduce(0) { $0 + (Int($1.playcount) ?? 0) }
+    }
 }

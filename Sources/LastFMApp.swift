@@ -50,6 +50,11 @@ class AppState: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     
+    // Menu bar stats (from Last.fm API)
+    @Published var menuBarTodayCount: Int = 0
+    @Published var menuBarWeekCount: Int = 0
+    @Published var menuBarMonthCount: Int = 0
+    
     let scrobbleMonitor = ScrobbleMonitor()
     let statsManager = ScrobbleStatsManager()
     let service = LastFMService()
@@ -89,12 +94,21 @@ class AppState: ObservableObject {
         }
     }
     
-    /// Lightweight refresh — only updates recent tracks and stats.
+    /// Lightweight refresh — only updates recent tracks and menu bar stats.
     private func refreshAfterScrobble() {
         Task {
             do {
                 let (tracks, _, _) = try await service.getRecentTracks(username: "verbog", limit: 20)
                 self.recentTracks = tracks
+                
+                // Also refresh menu bar stats from API
+                async let todayCount = service.getScrobbleCount(username: "verbog", period: "7day")
+                async let weekCount = service.getScrobbleCount(username: "verbog", period: "1month")
+                async let monthCount = service.getScrobbleCount(username: "verbog", period: "3month")
+                
+                self.menuBarTodayCount = try await todayCount
+                self.menuBarWeekCount = try await weekCount
+                self.menuBarMonthCount = try await monthCount
             } catch {
                 // Silent fail for background refresh
             }
@@ -129,6 +143,14 @@ class AppState: ObservableObject {
                 self.userInfo = user
                 self.isLoading = false
                 self.loadedTabs = Set(SidebarTab.allCases)
+                
+                // Fetch menu bar stats from API
+                async let todayCount = self.service.getScrobbleCount(username: "verbog", period: "7day")
+                async let weekCount = self.service.getScrobbleCount(username: "verbog", period: "1month")
+                async let monthCount = self.service.getScrobbleCount(username: "verbog", period: "3month")
+                self.menuBarTodayCount = try await todayCount
+                self.menuBarWeekCount = try await weekCount
+                self.menuBarMonthCount = try await monthCount
             } catch {
                 self.errorMessage = error.localizedDescription
                 self.isLoading = false
