@@ -53,6 +53,72 @@ struct TopAlbum: Identifiable, Codable {
     }
 }
 
+struct TopTrack: Identifiable {
+    let id = UUID()
+    let name: String
+    let artist: String
+    let playcount: String
+    let imageURL: String?
+    let rank: Int?
+}
+
+struct TopTracksResponse: Codable {
+    let toptracks: TopTracksContainer
+}
+
+struct TopTracksContainer: Codable {
+    let track: [LastFMTopTrack]
+    let attr: TopTracksAttr?
+    
+    enum CodingKeys: String, CodingKey {
+        case track
+        case attr = "@attr"
+    }
+}
+
+struct LastFMTopTrack: Codable {
+    let name: String
+    let artist: LastFMTopTrackArtist
+    let playcount: String
+    let image: [LastFMTopTrackImage]
+    let attr: TrackRankAttr?
+    
+    enum CodingKeys: String, CodingKey {
+        case name, artist, playcount, image
+        case attr = "@attr"
+    }
+    
+    struct LastFMTopTrackArtist: Codable {
+        let name: String
+    }
+    
+    struct TrackRankAttr: Codable {
+        let rank: String
+    }
+    
+    struct LastFMTopTrackImage: Codable {
+        let text: String
+        let size: String
+        
+        enum CodingKeys: String, CodingKey {
+            case text = "#text"
+            case size
+        }
+    }
+}
+
+struct TopTracksAttr: Codable {
+    let totalPages: String?
+    let page: String?
+    let perPage: String?
+    let total: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case totalPages = "totalPages"
+        case page, perPage, total
+    }
+}
+
 struct UserInfo: Codable {
     let name: String
     let realname: String?
@@ -81,6 +147,40 @@ struct RecentTracksResponse: Codable {
 
 struct RecentTracksContainer: Codable {
     let track: [LastFMTrack]
+    let attr: RecentTracksAttr?
+    
+    enum CodingKeys: String, CodingKey {
+        case track
+        case attr = "@attr"
+    }
+}
+
+struct RecentTracksAttr: Codable {
+    let user: String?
+    let totalPages: String?
+    let page: String?
+    let perPage: String?
+    let total: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case user
+        case totalPages = "totalPages"
+        case page, perPage, total
+    }
+}
+
+struct TopListAttr: Codable {
+    let user: String?
+    let totalPages: String?
+    let page: String?
+    let perPage: String?
+    let total: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case user
+        case totalPages = "totalPages"
+        case page, perPage, total
+    }
 }
 
 struct LastFMTrack: Codable {
@@ -129,6 +229,12 @@ struct TopArtistsResponse: Codable {
 
 struct TopArtistsContainer: Codable {
     let artist: [LastFMArtist]
+    let attr: TopListAttr?
+    
+    enum CodingKeys: String, CodingKey {
+        case artist
+        case attr = "@attr"
+    }
 }
 
 struct LastFMArtist: Codable {
@@ -163,6 +269,12 @@ struct TopAlbumsResponse: Codable {
 
 struct TopAlbumsContainer: Codable {
     let album: [LastFMAlbum]
+    let attr: TopListAttr?
+    
+    enum CodingKeys: String, CodingKey {
+        case album
+        case attr = "@attr"
+    }
 }
 
 struct LastFMAlbum: Codable {

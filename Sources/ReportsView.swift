@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Listening reports view — generates and displays a report for a selected time period.
+/// Listening reports view — generates and displays a report from the Last.fm API.
 struct ReportsView: View {
     @EnvironmentObject var appState: AppState
     @State private var selectedPeriod: TimePeriod = .month
@@ -126,7 +126,11 @@ struct ReportsView: View {
         isGenerating = true
         report = nil
         Task {
-            let newReport = ListeningReport.generate(from: appState.statsManager, period: selectedPeriod)
+            let newReport = await ListeningReport.generate(
+                username: "verbog",
+                service: appState.service,
+                period: selectedPeriod
+            )
             await MainActor.run {
                 report = newReport
                 isGenerating = false

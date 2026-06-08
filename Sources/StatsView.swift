@@ -1,61 +1,108 @@
 import SwiftUI
 
-/// Quick stats view — shows scrobble counts with a visual breakdown.
+/// Quick stats view — fetches data directly from the Last.fm API.
 struct StatsView: View {
     @EnvironmentObject var appState: AppState
     
-    private var stats: ScrobbleStatsManager { appState.statsManager }
+    @State private var userInfo: UserInfo?
+    @State private var topArtistsWeek: [TopArtist] = []
+    @State private var topAlbumsWeek: [TopAlbum] = []
+    @State private var topTracksWeek: [TopTrack] = []
+    @State private var isLoading = true
     
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                // Big Numbers
-                HStack(spacing: 16) {
-                    BigStat(value: "\(stats.todayCount)", label: "Today", color: .green)
-                    BigStat(value: "\(stats.weekCount)", label: "This Week", color: .blue)
-                    BigStat(value: "\(stats.monthCount)", label: "This Month", color: .purple)
-                    BigStat(value: "\(stats.totalCount)", label: "All Time", color: .orange)
-                }
-                
-                // Top Artists (all time)
-                let topArtists = stats.topArtists(in: .allTime, limit: 5)
-                if !topArtists.isEmpty {
-                    QuickTopList(
-                        title: "Top Artists (All Time)",
-                        icon: "person.fill",
-                        items: topArtists.enumerated().map { (i, a) in
-                            QuickTopItem(rank: i + 1, name: a.name, detail: "\(a.count) scrobbles", progress: Double(a.count) / Double(max(stats.totalCount, 1)))
+            if isLoading {
+                Spacer()
+                ProgressView()
+                    .scaleEffect(0.8)
+                Text("Loading stats…")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 8)
+                Spacer()
+            } else {
+                VStack(alignment: .leading, spacing: 20) {
+                    // Big Numbers
+                    if let user = userInfo {
+                        HStack(spacing: 16) {
+                            BigStat(value: formatCount(user.playcount), label: "Total Scrobbles", color: .purple)
+                            BigStat(value: formatCount(user.artistCount), label: "Artists", color: .blue)
+                            BigStat(value: formatCount(user.albumCount), label: "Albums", color: .orange)
+                            BigStat(value: formatCount(user.trackCount), label: "Tracks", color: .green)
                         }
-                    )
+                    }
+                    
+                    // Top Artists (this week)
+                    if !topArtistsWeek.isEmpty {
+                        QuickTopList(
+                            title: "Top Artists (7 Days)",
+                            icon: "person.fill",
+                            items: topArtistsWeek.prefix(5).enumerated().map { (i, a) in
+                                QuickTopItem(rank: i + 1, name: a.name, detail: "\(a.playcount) scrobbles", progress: Double(a.playcount) ?? 0 > 0 ? min(1.0, Double(a.playcount)!) : nil)
+                            }
+                        )
+                    }
+                    
+                    // Top Albums (this week)
+                    if !topAlbumsWeek.isEmpty {
+                        QuickTopList(
+                            title: "Top Albums (7 Days)",
+                            icon: "square.stack.fill",
+                            items: topAlbumsWeek.prefix(5).enumerated().map { (i, a) in
+                                QuickTopItem(rank: i + 1, name: a.name, detail: "\(a.artist) · \(a.playcount)", progress: nil)
+                            }
+                        )
+                    }
+                    
+                    // Top Tracks (this week)
+                    if !topTracksWeek.isEmpty {
+                        QuickTopList(
+                            title: "Top Tracks (7 Days)",
+                            icon: "music.note",
+                            items: topTracksWeek.prefix(5).enumerated().map { (i, t) in
+                                QuickTopItem(rank: i + 1, name: t.name, detail: "\(t.artist) · \(t.playcount)", progress: nil)
+                            }
+                        )
+                    }
                 }
-                
-                // Top Albums (this month)
-                let topAlbums = stats.topAlbums(in: .month, limit: 5)
-                if !topAlbums.isEmpty {
-                    QuickTopList(
-                        title: "Top Albums (This Month)",
-                        icon: "square.stack.fill",
-                        items: topAlbums.enumerated().map { (i, a) in
-                            QuickTopItem(rank: i + 1, name: a.name, detail: "\(a.artist) · \(a.count)", progress: nil)
-                        }
-                    )
-                }
-                
-                // Top Tracks (this week)
-                let topTracks = stats.topTracks(in: .week, limit: 5)
-                if !topTracks.isEmpty {
-                    QuickTopList(
-                        title: "Top Tracks (This Week)",
-                        icon: "music.note",
-                        items: topTracks.enumerated().map { (i, t) in
-                            QuickTopItem(rank: i + 1, name: t.name, detail: "\(t.artist) · \(t.count)", progress: nil)
-                        }
-                    )
-                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 24)
         }
+        .task { await loadData() }
+    }
+    
+    private func loadData() async {
+        isLoading = true
+        let username = "verbog"
+        let service = appState.service
+        
+        do {
+            async let user = service.getUserInfo(username: username)
+            async let artists = service.getTopArtists(username: username, limit: 5, period: "7day")
+            async let albums = service.getTopAlbums(username: username, limit: 5, period: "7day")
+            async let tracks = service.getTopTracks(username: username, limit: 5, period: "7day")
+            
+            let (u, ar, al, tr) = try await (user, artists, albums, tracks)
+            
+            await MainActor.run {
+                userInfo = u
+                topArtistsWeek = ar
+                topAlbumsWeek = al
+                topTracksWeek = tr
+                isLoading = false
+            }
+        } catch {
+            await MainActor.run { isLoading = false }
+        }
+    }
+    
+    private func formatCount(_ s: String) -> String {
+        guard let n = Int(s) else { return s }
+        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
+        if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1_000) }
+        return "\(n)"
     }
 }
 
@@ -118,7 +165,7 @@ struct QuickTopList: View {
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                         
-                        if let p = item.progress {
+                        if let p = item.progress, p > 0 {
                             GeometryReader { geo in
                                 ZStack(alignment: .leading) {
                                     RoundedRectangle(cornerRadius: 2)
@@ -126,7 +173,7 @@ struct QuickTopList: View {
                                         .frame(height: 3)
                                     RoundedRectangle(cornerRadius: 2)
                                         .fill(.purple.gradient)
-                                        .frame(width: geo.size.width * p, height: 3)
+                                        .frame(width: geo.size.width * min(p, 1.0), height: 3)
                                 }
                             }
                             .frame(height: 3)

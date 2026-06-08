@@ -44,6 +44,7 @@ class AppState: ObservableObject {
     @Published var recentTracks: [RecentTrack] = []
     @Published var topArtists: [TopArtist] = []
     @Published var topAlbums: [TopAlbum] = []
+    @Published var topTracks: [TopTrack] = []
     @Published var userInfo: UserInfo?
     @Published var isLoading = false
     @Published var errorMessage: String?
@@ -63,15 +64,17 @@ class AppState: ObservableObject {
         
         Task {
             do {
-                let tracks = try await service.getRecentTracks(username: "verbog", limit: 20)
+                let (tracks, _, _) = try await service.getRecentTracks(username: "verbog", limit: 20)
                 let artists = try await service.getTopArtists(username: "verbog", limit: 12)
                 let albums = try await service.getTopAlbums(username: "verbog", limit: 12)
+                let tracksTop = try await service.getTopTracks(username: "verbog", limit: 12)
                 let user = try await service.getUserInfo(username: "verbog")
                 
                 await MainActor.run {
                     self.recentTracks = tracks
                     self.topArtists = artists
                     self.topAlbums = albums
+                    self.topTracks = tracksTop
                     self.userInfo = user
                     self.isLoading = false
                 }

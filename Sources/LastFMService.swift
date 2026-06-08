@@ -6,12 +6,17 @@ class LastFMService {
     private let session = URLSession.shared
     private let imageService = ArtistImageService.shared
     
-    func getRecentTracks(username: String, limit: Int) async throws -> [RecentTrack] {
-        let url = URL(string: "\(baseURL)?method=user.getrecenttracks&user=\(username)&api_key=\(apiKey)&format=json&limit=\(limit)")!
+    // MARK: - Recent Tracks
+    
+    func getRecentTracks(username: String, limit: Int, page: Int = 1) async throws -> (tracks: [RecentTrack], totalPages: Int, total: Int) {
+        let url = URL(string: "\(baseURL)?method=user.getrecenttracks&user=\(username)&api_key=\(apiKey)&format=json&limit=\(limit)&page=\(page)")!
         let (data, _) = try await session.data(from: url)
         let response = try JSONDecoder().decode(RecentTracksResponse.self, from: data)
         
-        return response.recenttracks.track.map { track in
+        let totalPages = Int(response.recenttracks.attr?.totalPages ?? "1") ?? 1
+        let total = Int(response.recenttracks.attr?.total ?? "0") ?? 0
+        
+        let tracks = response.recenttracks.track.map { track in
             RecentTrack(
                 name: track.name,
                 artist: track.artist.text,
@@ -21,10 +26,30 @@ class LastFMService {
                 nowPlaying: track.attr?.nowplaying != nil
             )
         }
+        
+        return (tracks, totalPages, total)
     }
     
-    func getTopArtists(username: String, limit: Int) async throws -> [TopArtist] {
-        let url = URL(string: "\(baseURL)?method=user.gettopartists&user=\(username)&api_key=\(apiKey)&format=json&limit=\(limit)")!
+    /// Fetch all recent tracks across multiple pages (up to maxPages).
+    func getAllRecentTracks(username: String, maxPages: Int = 20) async throws -> [RecentTrack] {
+        var allTracks: [RecentTrack] = []
+        var page = 1
+        var totalPages = 1
+        
+        while page <= maxPages && page <= totalPages {
+            let result = try await getRecentTracks(username: username, limit: 50, page: page)
+            allTracks.append(contentsOf: result.tracks)
+            totalPages = result.totalPages
+            page += 1
+        }
+        
+        return allTracks
+    }
+    
+    // MARK: - Top Artists
+    
+    func getTopArtists(username: String, limit: Int, period: String = "overall") async throws -> [TopArtist] {
+        let url = URL(string: "\(baseURL)?method=user.gettopartists&user=\(username)&api_key=\(apiKey)&format=json&limit=\(limit)&period=\(period)")!
         let (data, _) = try await session.data(from: url)
         let response = try JSONDecoder().decode(TopArtistsResponse.self, from: data)
         
@@ -58,8 +83,10 @@ class LastFMService {
         return artists
     }
     
-    func getTopAlbums(username: String, limit: Int) async throws -> [TopAlbum] {
-        let url = URL(string: "\(baseURL)?method=user.gettopalbums&user=\(username)&api_key=\(apiKey)&format=json&limit=\(limit)")!
+    // MARK: - Top Albums
+    
+    func getTopAlbums(username: String, limit: Int, period: String = "overall") async throws -> [TopAlbum] {
+        let url = URL(string: "\(baseURL)?method=user.gettopalbums&user=\(username)&api_key=\(apiKey)&format=json&limit=\(limit)&period=\(period)")!
         let (data, _) = try await session.data(from: url)
         let response = try JSONDecoder().decode(TopAlbumsResponse.self, from: data)
         
@@ -73,6 +100,26 @@ class LastFMService {
             )
         }
     }
+    
+    // MARK: - Top Tracks
+    
+    func getTopTracks(username: String, limit: Int, period: String = "overall") async throws -> [TopTrack] {
+        let url = URL(string: "\(baseURL)?method=user.gettoptracks&user=\(username)&api_key=\(apiKey)&format=json&limit=\(limit)&period=\(period)")!
+        let (data, _) = try await session.data(from: url)
+        let response = try JSONDecoder().decode(TopTracksResponse.self, from: data)
+        
+        return response.toptracks.track.map { track in
+            TopTrack(
+                name: track.name,
+                artist: track.artist.name,
+                playcount: track.playcount,
+                imageURL: track.image.last?.text,
+                rank: Int(track.attr?.rank ?? "0")
+            )
+        }
+    }
+    
+    // MARK: - User Info
     
     func getUserInfo(username: String) async throws -> UserInfo {
         let url = URL(string: "\(baseURL)?method=user.getinfo&user=\(username)&api_key=\(apiKey)&format=json")!

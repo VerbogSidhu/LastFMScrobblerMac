@@ -1,6 +1,7 @@
 import Foundation
 
 /// A generated listening report summarizing activity over a time period.
+/// Fetches data from the Last.fm API rather than relying on local stats.
 struct ListeningReport: Identifiable {
     let id = UUID()
     let period: TimePeriod
@@ -16,34 +17,84 @@ struct ListeningReport: Identifiable {
     let peakDay: (date: Date, count: Int)?
     let averagePerDay: Double
     
-    /// Generate a report from the stats manager for a given period.
-    static func generate(from stats: ScrobbleStatsManager, period: TimePeriod) -> ListeningReport {
-        let records = stats.records(in: period)
-        let uniqueArtists = Set(records.map(\.artist)).count
-        let uniqueAlbums = Set(records.map(\.album)).count
-        let uniqueTracks = Set(records.map(\.track)).count
-        
-        let perDay = stats.scrobblesPerDay(in: period)
-        let peakDay = perDay.max(by: { $0.count < $1.count })
-        
+    /// Generate a report by fetching from the Last.fm API.
+    @MainActor
+    static func generate(username: String, service: LastFMService, period: TimePeriod) async -> ListeningReport {
         let calendar = Calendar.current
-        let daysSinceStart = max(calendar.dateComponents([.day], from: period.startDate, to: Date()).day ?? 1, 1)
-        let averagePerDay = Double(records.count) / Double(daysSinceStart)
+        let now = Date()
         
-        return ListeningReport(
-            period: period,
-            generatedAt: Date(),
-            totalScrobbles: records.count,
-            uniqueArtists: uniqueArtists,
-            uniqueAlbums: uniqueAlbums,
-            uniqueTracks: uniqueTracks,
-            topArtists: stats.topArtists(in: period, limit: 10),
-            topAlbums: stats.topAlbums(in: period, limit: 10),
-            topTracks: stats.topTracks(in: period, limit: 10),
-            scrobblesPerDay: perDay,
-            peakDay: peakDay,
-            averagePerDay: averagePerDay
-        )
+        // Fetch top artists, albums, tracks for this period
+        async let artistsTask = service.getTopArtists(username: username, limit: 50, period: period.lastfmPeriod)
+        async let albumsTask = service.getTopAlbums(username: username, limit: 50, period: period.lastfmPeriod)
+        async let tracksTask = service.getTopTracks(username: username, limit: 50, period: period.lastfmPeriod)
+        
+        // Fetch recent tracks for daily breakdown (paginated)
+        async let recentTask = service.getAllRecentTracks(username: username, maxPages: 10)
+        
+        // Fetch user info for total scrobble count
+        async let userTask = service.getUserInfo(username: username)
+        
+        do {
+            let (artists, albums, tracks, recentTracks, userInfo) = try await (
+                artistsTask, albumsTask, tracksTask, recentTask, userTask
+            )
+            
+            let totalArtists = Int(userInfo.artistCount) ?? artists.count
+            let totalAlbums = Int(userInfo.albumCount) ?? albums.count
+            let totalTracks = Int(userInfo.trackCount) ?? tracks.count
+            
+            // Build daily breakdown from recent tracks
+            let periodStart = period.startDate
+            let datedTracks = recentTracks.compactMap { track -> (date: Date, count: Int)? in
+                guard let uts = track.date, let ts = TimeInterval(uts) else { return nil }
+                let date = Date(timeIntervalSince1970: ts)
+                guard date >= periodStart else { return nil }
+                return (calendar.startOfDay(for: date), 1)
+            }
+            
+            // Group by day
+            var dayCounts: [Date: Int] = [:]
+            for item in datedTracks {
+                dayCounts[item.date, default: 0] += 1
+            }
+            let scrobblesPerDay = dayCounts.sorted { $0.key < $1.key }.map { (date: $0.key, count: $0.value) }
+            let peakDay = scrobblesPerDay.max(by: { $0.count < $1.count })
+            
+            let daysSinceStart = max(calendar.dateComponents([.day], from: period.startDate, to: now).day ?? 1, 1)
+            let totalScrobbles = Int(userInfo.playcount) ?? 0
+            let averagePerDay = Double(datedTracks.count) / Double(daysSinceStart)
+            
+            return ListeningReport(
+                period: period,
+                generatedAt: Date(),
+                totalScrobbles: totalScrobbles,
+                uniqueArtists: totalArtists,
+                uniqueAlbums: totalAlbums,
+                uniqueTracks: totalTracks,
+                topArtists: artists.prefix(10).map { (name: $0.name, count: Int($0.playcount) ?? 0) },
+                topAlbums: albums.prefix(10).map { (name: $0.name, artist: $0.artist, count: Int($0.playcount) ?? 0) },
+                topTracks: tracks.prefix(10).map { (name: $0.name, artist: $0.artist, count: Int($0.playcount) ?? 0) },
+                scrobblesPerDay: scrobblesPerDay,
+                peakDay: peakDay,
+                averagePerDay: averagePerDay
+            )
+        } catch {
+            // Return empty report on error
+            return ListeningReport(
+                period: period,
+                generatedAt: Date(),
+                totalScrobbles: 0,
+                uniqueArtists: 0,
+                uniqueAlbums: 0,
+                uniqueTracks: 0,
+                topArtists: [],
+                topAlbums: [],
+                topTracks: [],
+                scrobblesPerDay: [],
+                peakDay: nil,
+                averagePerDay: 0
+            )
+        }
     }
     
     /// Format the report as a shareable text string.
