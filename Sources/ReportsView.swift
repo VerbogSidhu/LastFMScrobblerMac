@@ -223,48 +223,78 @@ struct ScrobbleChart: View {
             Text("Scrobbles Over Time")
                 .font(.system(size: 13, weight: .semibold))
             
-            HStack(alignment: .bottom, spacing: 2) {
-                ForEach(Array(data.enumerated()), id: \.offset) { _, entry in
-                    VStack(spacing: 2) {
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(.purple.gradient)
-                            .frame(
-                                width: max(3, CGFloat(300) / CGFloat(max(data.count, 1))),
-                                height: max(2, CGFloat(entry.count) / CGFloat(maxCount) * 100)
-                            )
-                        
-                        if shouldShowLabel(entry) {
-                            Text(dateLabel(entry.date))
-                                .font(.system(size: 7))
-                                .foregroundStyle(.white.opacity(0.3))
+            if data.isEmpty {
+                Text("No data for this period")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .frame(height: 120)
+            } else {
+                // Read available width, then render bars
+                GeometryReader { geo in
+                    let barWidth = max(2, (geo.size.width - CGFloat(data.count) * 1) / CGFloat(data.count))
+                    let showLabels = data.count <= 31
+                    
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .bottom, spacing: 1) {
+                            ForEach(Array(data.enumerated()), id: \.offset) { idx, entry in
+                                VStack(spacing: 2) {
+                                    RoundedRectangle(cornerRadius: 1.5)
+                                        .fill(barColor(for: entry.count))
+                                        .frame(
+                                            width: barWidth,
+                                            height: max(1, CGFloat(entry.count) / CGFloat(max(maxCount, 1)) * 100)
+                                        )
+                                    
+                                    if showLabels && shouldShowLabel(idx: idx) {
+                                        Text(dateLabel(entry.date))
+                                            .font(.system(size: 7))
+                                            .foregroundStyle(.white.opacity(0.3))
+                                            .rotationEffect(.degrees(-45), anchor: .topTrailing)
+                                    }
+                                }
+                            }
                         }
+                        .frame(height: 120)
                     }
                 }
+                .frame(height: 135)
             }
-            .frame(height: 120)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(14)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.04), lineWidth: 1))
     }
     
-    private func shouldShowLabel(_ entry: (date: Date, count: Int)) -> Bool {
-        let maxLabels = 8
+    private func barColor(for count: Int) -> LinearGradient {
+        if count == 0 {
+            return LinearGradient(colors: [.white.opacity(0.03)], startPoint: .top, endPoint: .bottom)
+        }
+        return LinearGradient(colors: [.purple, .purple.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+    }
+    
+    private func shouldShowLabel(idx: Int) -> Bool {
+        // For short periods show every day, for longer ones sample
+        let maxLabels = 10
         let step = max(1, data.count / maxLabels)
-        guard let idx = data.firstIndex(where: { $0.date == entry.date }) else { return false }
-        return idx % step == 0
+        return idx % step == 0 || idx == data.count - 1
     }
     
     private func dateLabel(_ date: Date) -> String {
         let f = DateFormatter()
+        f.locale = Locale.current
         switch period {
         case .day:
             f.dateFormat = "ha"
-        case .week, .month:
+        case .week:
+            f.dateFormat = "EEE"
+        case .month:
+            f.dateFormat = "d"     // just day number for month view
+        case .threeMonths:
             f.dateFormat = "MMM d"
-        default:
+        case .year:
             f.dateFormat = "MMM"
+        case .allTime:
+            f.dateFormat = "MMM ''yy"
         }
         return f.string(from: date)
     }
