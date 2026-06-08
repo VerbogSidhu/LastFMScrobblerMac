@@ -1,13 +1,12 @@
 import Foundation
 
 /// A generated listening report summarizing activity over a time period.
-/// Fetches data from the Last.fm API — all tracks within the period are
-/// fetched page by page until we pass the period start date.
+/// Fetches data from the Last.fm API.
 struct ListeningReport: Identifiable {
     let id = UUID()
     let period: TimePeriod
     let generatedAt: Date
-    let totalScrobbles: Int       // scrobbles within this period only
+    let totalScrobbles: Int       // from top artists sum — authoritative for the period
     let uniqueArtists: Int
     let uniqueAlbums: Int
     let uniqueTracks: Int
@@ -25,15 +24,15 @@ struct ListeningReport: Identifiable {
         let now = Date()
         let periodStart = period.startDate
         
-        // Max pages to fetch per period — stop early once we pass periodStart
+        // Max pages to fetch for the daily chart — stop early once we pass periodStart
         let maxPages: Int
         switch period {
-        case .day:        maxPages = 5    // 250 tracks
-        case .week:       maxPages = 10   // 500 tracks
-        case .month:      maxPages = 15   // 750 tracks
-        case .threeMonths: maxPages = 40  // 2000 tracks
-        case .year:       maxPages = 80   // 4000 tracks
-        case .allTime:    maxPages = 120  // 6000 tracks
+        case .day:         maxPages = 5
+        case .week:        maxPages = 10
+        case .month:       maxPages = 15
+        case .threeMonths: maxPages = 40
+        case .year:        maxPages = 80
+        case .allTime:     maxPages = 120
         }
         
         // Fetch top artists, albums, tracks for this period
@@ -41,7 +40,7 @@ struct ListeningReport: Identifiable {
         async let albumsTask = service.getTopAlbums(username: username, limit: 50, period: period.lastfmPeriod)
         async let tracksTask = service.getTopTracks(username: username, limit: 50, period: period.lastfmPeriod)
         
-        // Fetch recent tracks page by page until we pass the period start
+        // Fetch recent tracks for the daily chart
         async let recentTask = fetchTracksInPeriod(
             username: username, service: service,
             periodStart: periodStart, maxPages: maxPages
@@ -52,12 +51,16 @@ struct ListeningReport: Identifiable {
                 artistsTask, albumsTask, tracksTask, recentTask
             )
             
-            // Count unique artists/albums/tracks from fetched data
-            let artistSet = Set(recentTracks.map(\.artist))
-            let albumSet = Set(recentTracks.map { "\($0.album)|||\($0.artist)" })
-            let trackSet = Set(recentTracks.map { "\($0.name)|||\($0.artist)" })
+            // Total scrobbles = sum of all artist playcounts for this period.
+            // This is authoritative from Last.fm and consistent with the top lists.
+            let totalFromArtists = artists.reduce(0) { $0 + (Int($1.playcount) ?? 0) }
             
-            // Build daily breakdown — fill ALL days in the period
+            // Unique counts from fetched data
+            let artistSet = Set(artists.map(\.name))
+            let albumSet = Set(albums.map { "\($0.name)|||\($0.artist)" })
+            let trackSet = Set(tracks.map { "\($0.name)|||\($0.artist)" })
+            
+            // Build daily breakdown from recent tracks — fill ALL days in the period
             var dayCounts: [Date: Int] = [:]
             for track in recentTracks {
                 guard let uts = track.date, let ts = TimeInterval(uts) else { continue }
@@ -67,21 +70,16 @@ struct ListeningReport: Identifiable {
                 dayCounts[day, default: 0] += 1
             }
             
-            // Fill missing days with 0
             let filledDays = fillDays(from: periodStart, to: now, counts: dayCounts)
             let peakDay = filledDays.max(by: { $0.count < $1.count })
             
             let daysSinceStart = max(calendar.dateComponents([.day], from: periodStart, to: now).day ?? 1, 1)
-            let totalScrobbles = recentTracks.filter { track in
-                guard let uts = track.date, let ts = TimeInterval(uts) else { return false }
-                return Date(timeIntervalSince1970: ts) >= periodStart
-            }.count
-            let averagePerDay = Double(totalScrobbles) / Double(daysSinceStart)
+            let averagePerDay = Double(totalFromArtists) / Double(daysSinceStart)
             
             return ListeningReport(
                 period: period,
                 generatedAt: Date(),
-                totalScrobbles: totalScrobbles,
+                totalScrobbles: totalFromArtists,
                 uniqueArtists: artistSet.count,
                 uniqueAlbums: albumSet.count,
                 uniqueTracks: trackSet.count,
@@ -122,7 +120,6 @@ struct ListeningReport: Identifiable {
             let result = try await service.getRecentTracks(username: username, limit: 50, page: page)
             let tracks = result.tracks
             
-            // Check if we've gone past the period start
             var hitOldTrack = false
             for track in tracks {
                 if let uts = track.date, let ts = TimeInterval(uts) {
@@ -135,7 +132,6 @@ struct ListeningReport: Identifiable {
                 allTracks.append(track)
             }
             
-            // If last track on this page is older than period start, stop
             if hitOldTrack || tracks.count < 50 || page >= result.totalPages {
                 break
             }

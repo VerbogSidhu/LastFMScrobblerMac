@@ -6,6 +6,7 @@ struct ReportsView: View {
     @State private var selectedPeriod: TimePeriod = .month
     @State private var report: ListeningReport?
     @State private var isGenerating = false
+    @State private var currentTask: Task<Void, Never>?
     
     var body: some View {
         VStack(spacing: 0) {
@@ -120,17 +121,28 @@ struct ReportsView: View {
             }
         }
         .onAppear { generateReport() }
+        .onDisappear { currentTask?.cancel() }
     }
     
     private func generateReport() {
+        // Cancel any in-flight task
+        currentTask?.cancel()
+        
         isGenerating = true
         report = nil
-        Task {
+        
+        let period = selectedPeriod
+        
+        currentTask = Task {
             let newReport = await ListeningReport.generate(
                 username: "verbog",
                 service: appState.service,
-                period: selectedPeriod
+                period: period
             )
+            
+            // Only update if this task wasn't cancelled and period hasn't changed
+            guard !Task.isCancelled, selectedPeriod == period else { return }
+            
             await MainActor.run {
                 report = newReport
                 isGenerating = false
@@ -151,7 +163,7 @@ struct ReportSummaryCards: View {
             SummaryCard(icon: "square.stack.fill", value: "\(report.uniqueAlbums)", label: "Albums", color: .orange)
             SummaryCard(icon: "music.note", value: "\(report.uniqueTracks)", label: "Tracks", color: .green)
             
-            if let peak = report.peakDay {
+            if let peak = report.peakDay, peak.count > 0 {
                 SummaryCard(
                     icon: "flame.fill",
                     value: "\(peak.count)",
@@ -229,7 +241,6 @@ struct ScrobbleChart: View {
                     .foregroundStyle(.secondary)
                     .frame(height: 120)
             } else {
-                // Read available width, then render bars
                 GeometryReader { geo in
                     let barWidth = max(2, (geo.size.width - CGFloat(data.count) * 1) / CGFloat(data.count))
                     let showLabels = data.count <= 31
@@ -273,7 +284,6 @@ struct ScrobbleChart: View {
     }
     
     private func shouldShowLabel(idx: Int) -> Bool {
-        // For short periods show every day, for longer ones sample
         let maxLabels = 10
         let step = max(1, data.count / maxLabels)
         return idx % step == 0 || idx == data.count - 1
@@ -288,7 +298,7 @@ struct ScrobbleChart: View {
         case .week:
             f.dateFormat = "EEE"
         case .month:
-            f.dateFormat = "d"     // just day number for month view
+            f.dateFormat = "d"
         case .threeMonths:
             f.dateFormat = "MMM d"
         case .year:
