@@ -316,6 +316,9 @@ class ScrobbleMonitor: ObservableObject {
                             )
                             self.log("SCROBBLE ACCEPTED: \(trackInfo.name) — \(trackInfo.artist)")
                             self.statsManager?.recordScrobble(track: trackInfo.name, artist: trackInfo.artist, album: trackInfo.album)
+                        
+                            // Notify observers (AppState) to refresh UI
+                            NotificationCenter.default.post(name: .scrobbleDidComplete, object: nil)
                             await MainActor.run {
                                 self.lastScrobbledTrack = "\(trackInfo.name) — \(trackInfo.artist)"
                                 self.scrobbleLog.insert(

@@ -57,9 +57,48 @@ class AppState: ObservableObject {
     
     /// Tracks which tabs have already loaded to avoid redundant fetches.
     private var loadedTabs: Set<SidebarTab> = []
+    private var refreshTimer: Timer?
+    private var lastScrobbledTrack: String?
     
     init() {
         scrobbleMonitor.statsManager = statsManager
+        startAutoRefresh()
+    }
+    
+    deinit {
+        refreshTimer?.invalidate()
+    }
+    
+    /// Auto-refresh data every 30 seconds and immediately after scrobbles.
+    private func startAutoRefresh() {
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshAfterScrobble()
+            }
+        }
+        
+        // Observe scrobble events for immediate refresh
+        NotificationCenter.default.addObserver(
+            forName: .scrobbleDidComplete,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshAfterScrobble()
+            }
+        }
+    }
+    
+    /// Lightweight refresh — only updates recent tracks and stats.
+    private func refreshAfterScrobble() {
+        Task {
+            do {
+                let (tracks, _, _) = try await service.getRecentTracks(username: "verbog", limit: 20)
+                self.recentTracks = tracks
+            } catch {
+                // Silent fail for background refresh
+            }
+        }
     }
     
     /// Load all data on first launch — runs all API calls in parallel.
