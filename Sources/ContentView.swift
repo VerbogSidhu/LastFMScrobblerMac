@@ -52,7 +52,7 @@ struct SidebarView: View {
             // User info card
             if let user = appState.userInfo {
                 VStack(spacing: 8) {
-                    AsyncImage(url: URL(string: user.imageURL ?? "")) { image in
+                    CachedAsyncImage(url: user.imageURL) { image in
                         image.resizable()
                             .aspectRatio(contentMode: .fill)
                     } placeholder: {
@@ -544,7 +544,7 @@ struct TrackRow: View {
     var body: some View {
         HStack(spacing: 12) {
             // Album art
-            AsyncImage(url: URL(string: track.imageURL ?? "")) { image in
+            CachedAsyncImage(url: track.imageURL) { image in
                 image.resizable()
                     .aspectRatio(contentMode: .fill)
             } placeholder: {
@@ -668,7 +668,7 @@ struct ArtistCard: View {
     
     var body: some View {
         VStack(spacing: 8) {
-            AsyncImage(url: URL(string: artist.imageURL ?? "")) { image in
+            CachedAsyncImage(url: artist.imageURL) { image in
                 image.resizable()
                     .aspectRatio(contentMode: .fill)
             } placeholder: {
@@ -717,7 +717,7 @@ struct AlbumCard: View {
     
     var body: some View {
         VStack(spacing: 8) {
-            AsyncImage(url: URL(string: album.imageURL ?? "")) { image in
+            CachedAsyncImage(url: album.imageURL) { image in
                 image.resizable()
                     .aspectRatio(contentMode: .fill)
             } placeholder: {
