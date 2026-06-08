@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+LastFM.app/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
