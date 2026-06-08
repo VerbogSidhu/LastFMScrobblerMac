@@ -1,7 +1,7 @@
 import Foundation
 
 class LastFMService {
-    private let apiKey = "YOUR_API_KEY"
+    private let apiKey = "b5940532a8c9dfde75381c3060972a65"
     private let baseURL = "https://ws.audioscrobbler.com/2.0/"
     private let session = URLSession.shared
     private let imageService = ArtistImageService.shared
