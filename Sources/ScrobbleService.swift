@@ -32,20 +32,12 @@ class ScrobbleService {
         }
         combined += apiSecret
         
-        NSLog("[Scrobble] sig_input (first 200): %@", String(combined.prefix(200)))
-        NSLog("[Scrobble] sig_input length: %d", combined.count)
-        
         let digest = Insecure.MD5.hash(data: Data(combined.utf8))
         let sig = digest.map { String(format: "%02x", $0) }.joined()
-        NSLog("[Scrobble] computed_sig: %@", sig)
         
-        // Write to file
-        let sigLog = "[SIG] input=\(combined)\n[SIG] computed=\(sig)\n"
-        if let data = sigLog.data(using: .utf8) {
-            if let fh = FileHandle(forWritingAtPath: "/tmp/lastfm_scrobbler.log") {
-                fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
-            }
-        }
+        #if DEBUG
+        NSLog("[Scrobble] computed_sig: %@", sig)
+        #endif
         
         return sig
     }
@@ -115,21 +107,8 @@ class ScrobbleService {
         params["api_sig"] = apiSignature(params: params)
         params["format"] = "json"
         
-        NSLog("[Scrobble] api_sig=%@", params["api_sig"] ?? "NIL")
-        
         let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
             .joined(separator: "&")
-        
-        NSLog("[Scrobble] Body: %@", queryString)
-        
-        // Write params to file for debugging
-        let debugLine = "[Scrobble] track=\(track) artist=\(artist) album=[\(album)] dur=\(duration) ts=\(timestamp) sig=\(params["api_sig"] ?? "?")\n"
-        if let data = debugLine.data(using: .utf8) {
-            let path = "/tmp/lastfm_scrobbler.log"
-            if let fh = FileHandle(forWritingAtPath: path) {
-                fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
-            }
-        }
         
         var request = URLRequest(url: URL(string: baseURL)!)
         request.httpMethod = "POST"
@@ -141,15 +120,6 @@ class ScrobbleService {
         let statusCode = httpResponse?.statusCode ?? 0
         let jsonString = String(data: data, encoding: .utf8) ?? "NO BODY"
         NSLog("[Scrobble] HTTP %d — %@", statusCode, jsonString)
-        let logLine = "[Scrobble] HTTP \(statusCode) — \(jsonString)\n"
-        if let data = logLine.data(using: .utf8) {
-            let path = "/tmp/lastfm_scrobbler.log"
-            if let fh = FileHandle(forWritingAtPath: path) {
-                fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
-            } else {
-                try? logLine.data(using: .utf8)?.write(to: URL(fileURLWithPath: path))
-            }
-        }
         
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         
@@ -163,6 +133,62 @@ class ScrobbleService {
             throw ScrobbleError.apiError(error)
         } else {
             NSLog("[Scrobble] Unexpected response: %@", "\(json ?? [:])")
+        }
+    }
+    
+    // MARK: - Love / Unlove
+    
+    /// Love a track on Last.fm.
+    func loveTrack(track: String, artist: String, sessionKey: String) async throws {
+        var params: [String: String] = [
+            "method": "track.love",
+            "api_key": apiKey,
+            "sk": sessionKey,
+            "track": track,
+            "artist": artist
+        ]
+        params["api_sig"] = apiSignature(params: params)
+        params["format"] = "json"
+        
+        let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
+            .joined(separator: "&")
+        
+        var request = URLRequest(url: URL(string: baseURL)!)
+        request.httpMethod = "POST"
+        request.httpBody = queryString.data(using: .utf8)
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        
+        let (_, response) = try await session.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard statusCode == 200 else {
+            throw ScrobbleError.apiError(statusCode)
+        }
+    }
+    
+    /// Unlove a track on Last.fm.
+    func unloveTrack(track: String, artist: String, sessionKey: String) async throws {
+        var params: [String: String] = [
+            "method": "track.unlove",
+            "api_key": apiKey,
+            "sk": sessionKey,
+            "track": track,
+            "artist": artist
+        ]
+        params["api_sig"] = apiSignature(params: params)
+        params["format"] = "json"
+        
+        let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
+            .joined(separator: "&")
+        
+        var request = URLRequest(url: URL(string: baseURL)!)
+        request.httpMethod = "POST"
+        request.httpBody = queryString.data(using: .utf8)
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        
+        let (_, response) = try await session.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard statusCode == 200 else {
+            throw ScrobbleError.apiError(statusCode)
         }
     }
     

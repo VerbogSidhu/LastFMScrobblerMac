@@ -160,6 +160,8 @@ struct SidebarView: View {
         case .recent: return "clock.fill"
         case .artists: return "person.2.fill"
         case .albums: return "square.stack.fill"
+        case .stats: return "chart.bar.fill"
+        case .reports: return "doc.text.fill"
         }
     }
 }
@@ -500,6 +502,10 @@ struct MainContentView: View {
                     TopArtistsView()
                 case .albums:
                     TopAlbumsView()
+                case .stats:
+                    StatsView()
+                case .reports:
+                    ReportsView()
                 }
             }
             .scrollIndicators(.hidden)
@@ -512,6 +518,8 @@ struct MainContentView: View {
         case .recent: return "Recently Played"
         case .artists: return "Top Artists"
         case .albums: return "Top Albums"
+        case .stats: return "Scrobble Stats"
+        case .reports: return "Listening Reports"
         }
     }
 }

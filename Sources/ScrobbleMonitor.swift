@@ -29,6 +29,7 @@ class ScrobbleMonitor: ObservableObject {
     private var scrobbleService: ScrobbleService?
     private var pollTimer: Timer?
     private let pollQueue = DispatchQueue(label: "com.verbog.lastfm.poll", qos: .utility)
+    weak var statsManager: ScrobbleStatsManager?
     
     // Track state
     private var currentTrackID: Int?
@@ -54,18 +55,6 @@ class ScrobbleMonitor: ObservableObject {
         let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
         let entry = "[\(timestamp)] \(message)"
         NSLog("[ScrobbleMonitor] %@", message)
-        // Also write to file for easy debugging
-        let logLine = entry + "\n"
-        if let data = logLine.data(using: .utf8) {
-            let path = "/tmp/lastfm_scrobbler.log"
-            if let fh = FileHandle(forWritingAtPath: path) {
-                fh.seekToEndOfFile()
-                fh.write(data)
-                fh.closeFile()
-            } else {
-                try? logLine.data(using: .utf8)?.write(to: URL(fileURLWithPath: path))
-            }
-        }
         DispatchQueue.main.async {
             self.debugLog.insert(entry, at: 0)
             if self.debugLog.count > 50 {
@@ -326,6 +315,7 @@ class ScrobbleMonitor: ObservableObject {
                                 sessionKey: sessionKey
                             )
                             self.log("SCROBBLE ACCEPTED: \(trackInfo.name) — \(trackInfo.artist)")
+                            self.statsManager?.recordScrobble(track: trackInfo.name, artist: trackInfo.artist, album: trackInfo.album)
                             await MainActor.run {
                                 self.lastScrobbledTrack = "\(trackInfo.name) — \(trackInfo.artist)"
                                 self.scrobbleLog.insert(

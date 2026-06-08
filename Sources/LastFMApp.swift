@@ -14,6 +14,28 @@ struct LastFMApp: App {
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
         .defaultSize(width: 1000, height: 700)
+        
+        MenuBarExtra {
+            MenuBarPopoverContent(appState: appState)
+        } label: {
+            HStack(spacing: 4) {
+                if appState.scrobbleMonitor.isScrobbling,
+                   let track = appState.scrobbleMonitor.currentTrackName {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 12))
+                    Text(truncate(track, max: 20))
+                        .font(.system(size: 11))
+                } else {
+                    Image(systemName: "waveform.circle")
+                        .font(.system(size: 14))
+                }
+            }
+        }
+        .menuBarExtraStyle(.window)
+    }
+    
+    private func truncate(_ s: String, max: Int) -> String {
+        s.count > max ? String(s.prefix(max)) + "…" : s
     }
 }
 
@@ -27,7 +49,13 @@ class AppState: ObservableObject {
     @Published var errorMessage: String?
     
     let scrobbleMonitor = ScrobbleMonitor()
-    private let service = LastFMService()
+    let statsManager = ScrobbleStatsManager()
+    let service = LastFMService()
+    let scrobbleService = ScrobbleService()
+    
+    init() {
+        scrobbleMonitor.statsManager = statsManager
+    }
     
     func loadAll() {
         isLoading = true
@@ -61,4 +89,6 @@ enum SidebarTab: String, CaseIterable {
     case recent = "Recent"
     case artists = "Top Artists"
     case albums = "Top Albums"
+    case stats = "Stats"
+    case reports = "Reports"
 }
