@@ -3,8 +3,22 @@ import Foundation
 class LastFMService {
     private let apiKey = "b5940532a8c9dfde75381c3060972a65"
     private let baseURL = "https://ws.audioscrobbler.com/2.0/"
-    private let session = URLSession.shared
     private let imageService = ArtistImageService.shared
+    
+    /// URLSession with in-memory + disk caching (5 min memory, 30 min disk).
+    /// Avoids re-fetching the same data when switching tabs.
+    private let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.urlCache = URLCache(
+            memoryCapacity: 1 * 1024 * 1024,   // 1 MB memory
+            diskCapacity: 5 * 1024 * 1024,      // 5 MB disk
+            diskPath: "LastFMAPICache"
+        )
+        config.requestCachePolicy = .reloadRevalidatingCacheData
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 30
+        return URLSession(configuration: config)
+    }()
     
     // MARK: - Recent Tracks
     

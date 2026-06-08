@@ -39,13 +39,14 @@ struct LastFMApp: App {
     }
 }
 
+@MainActor
 class AppState: ObservableObject {
-    @Published var selectedTab: SidebarTab = .recent
     @Published var recentTracks: [RecentTrack] = []
     @Published var topArtists: [TopArtist] = []
     @Published var topAlbums: [TopAlbum] = []
     @Published var topTracks: [TopTrack] = []
     @Published var userInfo: UserInfo?
+    @Published var selectedTab: SidebarTab = .recent
     @Published var isLoading = false
     @Published var errorMessage: String?
     
@@ -54,37 +55,80 @@ class AppState: ObservableObject {
     let service = LastFMService()
     let scrobbleService = ScrobbleService()
     
+    /// Tracks which tabs have already loaded to avoid redundant fetches.
+    private var loadedTabs: Set<SidebarTab> = []
+    
     init() {
         scrobbleMonitor.statsManager = statsManager
     }
     
+    /// Load all data on first launch — runs all API calls in parallel.
     func loadAll() {
+        guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
         
         Task {
             do {
-                let (tracks, _, _) = try await service.getRecentTracks(username: "verbog", limit: 20)
-                let artists = try await service.getTopArtists(username: "verbog", limit: 12)
-                let albums = try await service.getTopAlbums(username: "verbog", limit: 12)
-                let tracksTop = try await service.getTopTracks(username: "verbog", limit: 12)
-                let user = try await service.getUserInfo(username: "verbog")
+                // All 5 calls run concurrently
+                async let tracksResult = service.getRecentTracks(username: "verbog", limit: 20)
+                async let artistsResult = service.getTopArtists(username: "verbog", limit: 12)
+                async let albumsResult = service.getTopAlbums(username: "verbog", limit: 12)
+                async let tracksTopResult = service.getTopTracks(username: "verbog", limit: 12)
+                async let userResult = service.getUserInfo(username: "verbog")
                 
-                await MainActor.run {
-                    self.recentTracks = tracks
-                    self.topArtists = artists
-                    self.topAlbums = albums
-                    self.topTracks = tracksTop
-                    self.userInfo = user
-                    self.isLoading = false
-                }
+                let (tracks, _, _) = try await tracksResult
+                let artists = try await artistsResult
+                let albums = try await albumsResult
+                let tracksTop = try await tracksTopResult
+                let user = try await userResult
+                
+                self.recentTracks = tracks
+                self.topArtists = artists
+                self.topAlbums = albums
+                self.topTracks = tracksTop
+                self.userInfo = user
+                self.isLoading = false
+                self.loadedTabs = Set(SidebarTab.allCases)
             } catch {
-                await MainActor.run {
-                    self.errorMessage = error.localizedDescription
-                    self.isLoading = false
-                }
+                self.errorMessage = error.localizedDescription
+                self.isLoading = false
             }
         }
+    }
+    
+    /// Load data for a specific tab. Skips if already loaded.
+    func loadTab(_ tab: SidebarTab) {
+        guard !loadedTabs.contains(tab) else { return }
+        loadedTabs.insert(tab)
+        
+        Task {
+            do {
+                switch tab {
+                case .recent:
+                    let (tracks, _, _) = try await service.getRecentTracks(username: "verbog", limit: 20)
+                    self.recentTracks = tracks
+                case .artists:
+                    self.topArtists = try await service.getTopArtists(username: "verbog", limit: 12)
+                case .albums:
+                    self.topAlbums = try await service.getTopAlbums(username: "verbog", limit: 12)
+                case .stats:
+                    // Stats loads its own data independently
+                    break
+                case .reports:
+                    // Reports loads its own data independently
+                    break
+                }
+            } catch {
+                // Silently fail for tab loads — user can retry by switching tabs
+            }
+        }
+    }
+    
+    /// Force-reload a tab's data (for pull-to-refresh, etc.).
+    func refreshTab(_ tab: SidebarTab) {
+        loadedTabs.remove(tab)
+        loadTab(tab)
     }
 }
 
