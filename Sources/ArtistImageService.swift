@@ -3,7 +3,8 @@ import Foundation
 /// Fetches real artist images from Deezer API as a fallback when Last.fm
 /// only has placeholder images (the generic grey silhouette).
 /// URL mappings are persisted to disk so Deezer isn't hit on every launch.
-class ArtistImageService {
+/// Uses an actor to prevent concurrent dictionary write crashes.
+actor ArtistImageService {
     static let shared = ArtistImageService()
     
     private let session = URLSession.shared
@@ -25,7 +26,7 @@ class ArtistImageService {
     }
     
     /// Check if a URL is the Last.fm placeholder image.
-    func isPlaceholder(_ url: String?) -> Bool {
+    nonisolated func isPlaceholder(_ url: String?) -> Bool {
         guard let url = url else { return true }
         return url.contains(placeholderHash) || url.isEmpty
     }
@@ -44,7 +45,7 @@ class ArtistImageService {
         }
         
         do {
-            let (data, _) = try await session.data(from: url)
+            let (data, _) = try await URLSession.shared.data(from: url)
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let results = json["data"] as? [[String: Any]],
                   let first = results.first,
@@ -64,24 +65,13 @@ class ArtistImageService {
     
     /// Batch-fetch artist images. Returns a dictionary of artist name -> image URL.
     func fetchArtistImages(for artistNames: [String]) async -> [String: String] {
+        // Fetch sequentially to avoid actor reentrancy issues
         var results: [String: String] = [:]
-        
-        // Fetch in parallel (but capped to avoid rate limiting)
-        await withTaskGroup(of: (String, String?).self) { group in
-            for name in artistNames {
-                group.addTask { [self] in
-                    let image = await self.fetchArtistImage(for: name)
-                    return (name, image)
-                }
-            }
-            
-            for await (name, image) in group {
-                if let image = image {
-                    results[name] = image
-                }
+        for name in artistNames {
+            if let image = await fetchArtistImage(for: name) {
+                results[name] = image
             }
         }
-        
         return results
     }
     
