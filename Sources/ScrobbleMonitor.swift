@@ -282,6 +282,16 @@ class ScrobbleMonitor: ObservableObject {
             // Track same, accumulate play time
             if isPlaying {
                 let now = Date()
+                
+                // After scrobbling, if accumulated time exceeds track duration,
+                // it means the track played again (looped). Reset for next scrobble.
+                if self.hasScrobbled && effectiveDuration > 0 && self.accumulatedPlayTime >= Double(effectiveDuration) {
+                    self.log("Track looped (\(Int(self.accumulatedPlayTime))s played, \(effectiveDuration)s track) — resetting for next scrobble")
+                    self.hasScrobbled = false
+                    self.accumulatedPlayTime = 0
+                    self.trackStartTime = now
+                }
+                
                 if let last = self.lastPollTime {
                     self.accumulatedPlayTime += now.timeIntervalSince(last)
                 }
