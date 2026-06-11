@@ -39,6 +39,7 @@ class ScrobbleMonitor: ObservableObject {
     private var lastPollTime: Date?
     private var wasPlaying = false
     private var durationCache: [Int: Int] = [:] // trackID -> duration (for tracks that initially report 0)
+    private var lastPlayerPosition: Int = 0 // track player position to detect loops
     
     // Session key stored in UserDefaults
     private let sessionKeyKey = "lastfm_session_key"
@@ -187,6 +188,7 @@ class ScrobbleMonitor: ObservableObject {
         currentArtist = nil
         currentAlbumArt = nil
         durationCache = [:]
+        lastPlayerPosition = 0
     }
     
     private func poll() {
@@ -260,6 +262,7 @@ class ScrobbleMonitor: ObservableObject {
                 self.accumulatedPlayTime = 0
                 self.lastPollTime = Date()
                 self.wasPlaying = isPlaying
+                self.lastPlayerPosition = trackInfo.playerPosition
                 
                 // Send now-playing update
                 Task {
@@ -283,10 +286,42 @@ class ScrobbleMonitor: ObservableObject {
             if isPlaying {
                 let now = Date()
                 
-                // After scrobbling, if accumulated time exceeds track duration,
-                // it means the track played again (looped). Reset for next scrobble.
+                // Detect loop via player position reset:
+                // Position dropped from near end (>60% of duration) to near start (<30%)
+                if effectiveDuration > 0 {
+                    let posRatio = Double(trackInfo.playerPosition) / Double(effectiveDuration)
+                    let lastRatio = Double(self.lastPlayerPosition) / Double(effectiveDuration)
+                    
+                    if lastRatio > 0.6 && posRatio < 0.3 {
+                        self.log("Loop detected via position reset (\(self.lastPlayerPosition)s → \(trackInfo.playerPosition)s)")
+                        
+                        // Send now-playing update for the new loop iteration
+                        Task {
+                            do {
+                                try await service.updateNowPlaying(
+                                    track: trackInfo.name,
+                                    artist: trackInfo.artist,
+                                    album: trackInfo.album,
+                                    duration: effectiveDuration,
+                                    sessionKey: sessionKey
+                                )
+                                self.log("Now-playing sent (loop): \(trackInfo.name)")
+                            } catch {
+                                self.log("Now-playing failed (loop): \(error)")
+                            }
+                        }
+                        
+                        // Reset scrobble state for new loop
+                        self.hasScrobbled = false
+                        self.accumulatedPlayTime = 0
+                        self.trackStartTime = now
+                    }
+                }
+                
+                // Fallback: if accumulated time exceeds track duration without
+                // position reset detection, still reset for next scrobble
                 if self.hasScrobbled && effectiveDuration > 0 && self.accumulatedPlayTime >= Double(effectiveDuration) {
-                    self.log("Track looped (\(Int(self.accumulatedPlayTime))s played, \(effectiveDuration)s track) — resetting for next scrobble")
+                    self.log("Track looped (fallback: \(Int(self.accumulatedPlayTime))s played, \(effectiveDuration)s track) — resetting for next scrobble")
                     self.hasScrobbled = false
                     self.accumulatedPlayTime = 0
                     self.trackStartTime = now
@@ -296,6 +331,7 @@ class ScrobbleMonitor: ObservableObject {
                     self.accumulatedPlayTime += now.timeIntervalSince(last)
                 }
                 self.lastPollTime = now
+                self.lastPlayerPosition = trackInfo.playerPosition
                 self.wasPlaying = true
             } else if self.wasPlaying && !isPlaying {
                 // Just paused
