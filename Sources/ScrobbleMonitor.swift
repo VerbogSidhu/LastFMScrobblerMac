@@ -41,6 +41,12 @@ class ScrobbleMonitor: ObservableObject {
     private var durationCache: [Int: Int] = [:] // trackID -> duration (for tracks that initially report 0)
     private var lastPlayerPosition: Int = 0 // track player position to detect loops
     
+    // Now-playing refresh state
+    private var lastNowPlayingTime: Date?
+    private var nowPlayingRetryCount = 0
+    private let nowPlayingRefreshInterval: TimeInterval = 60 // refresh every 60s
+    private let nowPlayingMaxRetries = 3
+    
     // Session key stored in UserDefaults
     private let sessionKeyKey = "lastfm_session_key"
     private let apiSecretKey = "lastfm_api_secret"
@@ -189,6 +195,8 @@ class ScrobbleMonitor: ObservableObject {
         currentAlbumArt = nil
         durationCache = [:]
         lastPlayerPosition = 0
+        lastNowPlayingTime = nil
+        nowPlayingRetryCount = 0
     }
     
     private func poll() {
@@ -263,22 +271,11 @@ class ScrobbleMonitor: ObservableObject {
                 self.lastPollTime = Date()
                 self.wasPlaying = isPlaying
                 self.lastPlayerPosition = trackInfo.playerPosition
+                self.lastNowPlayingTime = nil  // reset refresh timer
+                self.nowPlayingRetryCount = 0
                 
                 // Send now-playing update
-                Task {
-                    do {
-                        try await service.updateNowPlaying(
-                            track: trackInfo.name,
-                            artist: trackInfo.artist,
-                            album: trackInfo.album,
-                            duration: effectiveDuration,
-                            sessionKey: sessionKey
-                        )
-                        self.log("Now-playing sent: \(trackInfo.name)")
-                    } catch {
-                        self.log("Now-playing failed: \(error)")
-                    }
-                }
+                self.sendNowPlaying(trackInfo: trackInfo, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
                 return
             }
             
@@ -296,20 +293,9 @@ class ScrobbleMonitor: ObservableObject {
                         self.log("Loop detected via position reset (\(self.lastPlayerPosition)s → \(trackInfo.playerPosition)s)")
                         
                         // Send now-playing update for the new loop iteration
-                        Task {
-                            do {
-                                try await service.updateNowPlaying(
-                                    track: trackInfo.name,
-                                    artist: trackInfo.artist,
-                                    album: trackInfo.album,
-                                    duration: effectiveDuration,
-                                    sessionKey: sessionKey
-                                )
-                                self.log("Now-playing sent (loop): \(trackInfo.name)")
-                            } catch {
-                                self.log("Now-playing failed (loop): \(error)")
-                            }
-                        }
+                        self.lastNowPlayingTime = nil
+                        self.nowPlayingRetryCount = 0
+                        self.sendNowPlaying(trackInfo: trackInfo, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
                         
                         // Reset scrobble state for new loop
                         self.hasScrobbled = false
@@ -333,6 +319,13 @@ class ScrobbleMonitor: ObservableObject {
                 self.lastPollTime = now
                 self.lastPlayerPosition = trackInfo.playerPosition
                 self.wasPlaying = true
+                
+                // Periodic now-playing refresh — keeps Last.fm status alive
+                if let lastNP = self.lastNowPlayingTime,
+                   now.timeIntervalSince(lastNP) >= self.nowPlayingRefreshInterval {
+                    self.log("Periodic now-playing refresh (every \(Int(self.nowPlayingRefreshInterval))s)")
+                    self.sendNowPlaying(trackInfo: trackInfo, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
+                }
             } else if self.wasPlaying && !isPlaying {
                 // Just paused
                 self.log("Track paused — accumulated \(Int(self.accumulatedPlayTime))s so far")
@@ -390,6 +383,43 @@ class ScrobbleMonitor: ObservableObject {
                     if remaining > 0 && remaining % 30 < 5 {
                         self.log("Play time: \(Int(self.accumulatedPlayTime))s / \(Int(threshold))s threshold — \(remaining)s to scrobble")
                     }
+                }
+            }
+        }
+    }
+    
+    // MARK: - Now-Playing Helper
+    
+    private func sendNowPlaying(trackInfo: MusicTrackInfo, effectiveDuration: Int, sessionKey: String, isRetry: Bool) {
+        guard let service = scrobbleService else { return }
+        
+        Task {
+            do {
+                try await service.updateNowPlaying(
+                    track: trackInfo.name,
+                    artist: trackInfo.artist,
+                    album: trackInfo.album,
+                    duration: effectiveDuration,
+                    sessionKey: sessionKey
+                )
+                self.log("Now-playing sent: \(trackInfo.name)")
+                self.lastNowPlayingTime = Date()
+                self.nowPlayingRetryCount = 0
+            } catch {
+                self.log("Now-playing failed: \(error)")
+                // Retry up to 3 times with backoff
+                self.nowPlayingRetryCount += 1
+                if self.nowPlayingRetryCount <= self.nowPlayingMaxRetries {
+                    let delay = Double(self.nowPlayingRetryCount) * 5.0 // 5s, 10s, 15s
+                    self.log("Now-playing retry \(self.nowPlayingRetryCount)/\(self.nowPlayingMaxRetries) in \(Int(delay))s")
+                    Task.detached { [weak self] in
+                        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        await MainActor.run {
+                            self?.sendNowPlaying(trackInfo: trackInfo, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: true)
+                        }
+                    }
+                } else {
+                    self.log("Now-playing gave up after \(self.nowPlayingMaxRetries) retries")
                 }
             }
         }
