@@ -390,6 +390,16 @@ class ScrobbleMonitor: ObservableObject {
     
     // MARK: - Now-Playing Helper
     
+    /// Force a now-playing update right now (called by refresh button).
+    func forceNowPlayingUpdate() {
+        guard authStatus == .authenticated, let sessionKey = sessionKey else { return }
+        guard let info = detector.getCurrentTrack(), info.playerState == "playing" else { return }
+        
+        let effectiveDuration = info.duration > 0 ? info.duration : (durationCache[info.databaseID] ?? 0)
+        log("Manual now-playing refresh triggered")
+        sendNowPlaying(trackInfo: info, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
+    }
+    
     private func sendNowPlaying(trackInfo: MusicTrackInfo, effectiveDuration: Int, sessionKey: String, isRetry: Bool) {
         guard let service = scrobbleService else { return }
         

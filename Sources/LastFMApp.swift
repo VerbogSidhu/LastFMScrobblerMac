@@ -121,6 +121,9 @@ class AppState: ObservableObject {
         isLoading = true
         errorMessage = nil
         
+        // Also push now-playing when user manually refreshes
+        scrobbleMonitor.forceNowPlayingUpdate()
+        
         Task {
             do {
                 // All 5 calls run concurrently
