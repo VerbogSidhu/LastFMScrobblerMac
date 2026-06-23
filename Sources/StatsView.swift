@@ -38,7 +38,7 @@ struct StatsView: View {
                 VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
                     // Big Numbers
                     HStack(spacing: DS.Spacing.lg) {
-                        StatCard(value: formatCount(user.playcount), label: "Total Scrobbles", color: DS.Colors.accent)
+                        StatCard(value: formatCount("\(user.playcount)"), label: "Total Scrobbles", color: DS.Colors.accent)
                         StatCard(value: formatCount(user.artistCount), label: "Artists", color: DS.Colors.info)
                         StatCard(value: formatCount(user.albumCount), label: "Albums", color: DS.Colors.warning)
                         StatCard(value: formatCount(user.trackCount), label: "Tracks", color: DS.Colors.success)
@@ -51,7 +51,7 @@ struct StatsView: View {
                                 rank: i,
                                 primary: a.name,
                                 secondary: "\(a.playcount) scrobbles",
-                                progress: { let pc = Double(a.playcount) ?? 0; return pc > 0 ? min(1.0, pc) : nil }()
+                                progress: { let pc = Double(a.playcount); return pc > 0 ? min(1.0, pc) : nil }()
                             )
                         }
                     }

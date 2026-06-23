@@ -175,6 +175,6 @@ class LastFMService {
         let url = try buildURL(method: "user.gettopartists", parameters: ["user": username, "limit": "50", "period": period])
         let (data, _) = try await session.data(from: url)
         let response = try JSONDecoder().decode(TopArtistsResponse.self, from: data)
-        return response.topartists.artist.reduce(0) { $0 + (Int($1.playcount) ?? 0) }
+        return response.topartists.artist.reduce(0) { $0 + $1.playcount }
     }
 }

@@ -36,7 +36,7 @@ struct SidebarView: View {
                             .foregroundStyle(DS.Colors.textTertiary)
 
                         HStack(spacing: DS.Spacing.xl) {
-                            StatBadge(value: user.playcount, label: "Scrobbles")
+                            StatBadge(value: "\(user.playcount)", label: "Scrobbles")
                             StatBadge(value: user.artistCount, label: "Artists")
                             StatBadge(value: user.albumCount, label: "Albums")
                         }

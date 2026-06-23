@@ -36,7 +36,7 @@ struct RecentTrack: Identifiable, Codable {
 struct TopArtist: Identifiable, Codable {
     let id = UUID()
     let name: String
-    let playcount: String
+    let playcount: Int
     let imageURL: String?
     let rank: Int?
     
@@ -52,7 +52,7 @@ struct TopAlbum: Identifiable, Codable {
     let id = UUID()
     let name: String
     let artist: String
-    let playcount: String
+    let playcount: Int
     let imageURL: String?
     let rank: Int?
     
@@ -69,7 +69,7 @@ struct TopTrack: Identifiable {
     let id = UUID()
     let name: String
     let artist: String
-    let playcount: String
+    let playcount: Int
     let imageURL: String?
     let rank: Int?
 }
@@ -91,13 +91,23 @@ struct TopTracksContainer: Codable {
 struct LastFMTopTrack: Codable {
     let name: String
     let artist: LastFMTopTrackArtist
-    let playcount: String
+    let playcount: Int
     let image: [LastFMTopTrackImage]
     let attr: TrackRankAttr?
     
     enum CodingKeys: String, CodingKey {
         case name, artist, playcount, image
         case attr = "@attr"
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        artist = try container.decode(LastFMTopTrackArtist.self, forKey: .artist)
+        let playcountStr = try container.decode(String.self, forKey: .playcount)
+        playcount = Int(playcountStr) ?? 0
+        image = try container.decode([LastFMTopTrackImage].self, forKey: .image)
+        attr = try container.decodeIfPresent(TrackRankAttr.self, forKey: .attr)
     }
     
     struct LastFMTopTrackArtist: Codable {
@@ -135,7 +145,7 @@ struct UserInfo: Codable {
     let name: String
     let realname: String?
     let imageURL: String?
-    let playcount: String
+    let playcount: Int
     let artistCount: String
     let albumCount: String
     let trackCount: String
@@ -241,13 +251,22 @@ struct TopArtistsContainer: Codable {
 
 struct LastFMArtist: Codable {
     let name: String
-    let playcount: String
+    let playcount: Int
     let image: [LastFMImage]
     let attr: ArtistAttr?
     
     enum CodingKeys: String, CodingKey {
         case name, playcount, image
         case attr = "@attr"
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        let playcountStr = try container.decode(String.self, forKey: .playcount)
+        playcount = Int(playcountStr) ?? 0
+        image = try container.decode([LastFMImage].self, forKey: .image)
+        attr = try container.decodeIfPresent(ArtistAttr.self, forKey: .attr)
     }
 
     struct ArtistAttr: Codable {
@@ -272,13 +291,23 @@ struct TopAlbumsContainer: Codable {
 struct LastFMAlbum: Codable {
     let name: String
     let artist: AlbumArtist
-    let playcount: String
+    let playcount: Int
     let image: [LastFMImage]
     let attr: AlbumAttr?
     
     enum CodingKeys: String, CodingKey {
         case name, artist, playcount, image
         case attr = "@attr"
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        artist = try container.decode(AlbumArtist.self, forKey: .artist)
+        let playcountStr = try container.decode(String.self, forKey: .playcount)
+        playcount = Int(playcountStr) ?? 0
+        image = try container.decode([LastFMImage].self, forKey: .image)
+        attr = try container.decodeIfPresent(AlbumAttr.self, forKey: .attr)
     }
 
     struct AlbumArtist: Codable {
@@ -298,7 +327,7 @@ struct LastFMUser: Codable {
     let name: String
     let realname: String?
     let image: [LastFMImage]
-    let playcount: String
+    let playcount: Int
     let artistCount: String
     let albumCount: String
     let trackCount: String
@@ -308,5 +337,17 @@ struct LastFMUser: Codable {
         case artistCount = "artist_count"
         case albumCount = "album_count"
         case trackCount = "track_count"
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        realname = try container.decodeIfPresent(String.self, forKey: .realname)
+        image = try container.decode([LastFMImage].self, forKey: .image)
+        let playcountStr = try container.decode(String.self, forKey: .playcount)
+        playcount = Int(playcountStr) ?? 0
+        artistCount = try container.decode(String.self, forKey: .artistCount)
+        albumCount = try container.decode(String.self, forKey: .albumCount)
+        trackCount = try container.decode(String.self, forKey: .trackCount)
     }
 }

@@ -53,7 +53,7 @@ struct ListeningReport: Identifiable {
             
             // Total scrobbles = sum of all artist playcounts for this period.
             // This is authoritative from Last.fm and consistent with the top lists.
-            let totalFromArtists = artists.reduce(0) { $0 + (Int($1.playcount) ?? 0) }
+            let totalFromArtists = artists.reduce(0) { $0 + $1.playcount }
             
             // Unique counts from fetched data
             let artistSet = Set(artists.map(\.name))
@@ -83,9 +83,9 @@ struct ListeningReport: Identifiable {
                 uniqueArtists: artistSet.count,
                 uniqueAlbums: albumSet.count,
                 uniqueTracks: trackSet.count,
-                topArtists: artists.prefix(10).map { (name: $0.name, count: Int($0.playcount) ?? 0) },
-                topAlbums: albums.prefix(10).map { (name: $0.name, artist: $0.artist, count: Int($0.playcount) ?? 0) },
-                topTracks: tracks.prefix(10).map { (name: $0.name, artist: $0.artist, count: Int($0.playcount) ?? 0) },
+                topArtists: artists.prefix(10).map { (name: $0.name, count: $0.playcount) },
+                topAlbums: albums.prefix(10).map { (name: $0.name, artist: $0.artist, count: $0.playcount) },
+                topTracks: tracks.prefix(10).map { (name: $0.name, artist: $0.artist, count: $0.playcount) },
                 scrobblesPerDay: filledDays,
                 peakDay: peakDay,
                 averagePerDay: averagePerDay
