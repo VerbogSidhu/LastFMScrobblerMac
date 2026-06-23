@@ -51,7 +51,7 @@ struct StatsView: View {
                                 rank: i,
                                 primary: a.name,
                                 secondary: "\(a.playcount) scrobbles",
-                                progress: Double(a.playcount) ?? 0 > 0 ? min(1.0, Double(a.playcount)!) : nil
+                                progress: { let pc = Double(a.playcount) ?? 0; return pc > 0 ? min(1.0, pc) : nil }()
                             )
                         }
                     }
