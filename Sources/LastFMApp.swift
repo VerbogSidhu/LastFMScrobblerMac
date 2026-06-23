@@ -98,13 +98,13 @@ class AppState: ObservableObject {
     private func refreshAfterScrobble() {
         Task {
             do {
-                let (tracks, _, _) = try await service.getRecentTracks(username: "verbog", limit: 20)
+                let (tracks, _, _) = try await service.getRecentTracks(username: Constants.lastFMUsername, limit: 20)
                 self.recentTracks = tracks
                 
                 // Also refresh menu bar stats from API
-                async let todayCount = service.getScrobbleCount(username: "verbog", period: "7day")
-                async let weekCount = service.getScrobbleCount(username: "verbog", period: "1month")
-                async let monthCount = service.getScrobbleCount(username: "verbog", period: "3month")
+                async let todayCount = service.getScrobbleCount(username: Constants.lastFMUsername, period: "7day")
+                async let weekCount = service.getScrobbleCount(username: Constants.lastFMUsername, period: "1month")
+                async let monthCount = service.getScrobbleCount(username: Constants.lastFMUsername, period: "3month")
                 
                 self.menuBarTodayCount = try await todayCount
                 self.menuBarWeekCount = try await weekCount
@@ -127,11 +127,11 @@ class AppState: ObservableObject {
         Task {
             do {
                 // All 5 calls run concurrently
-                async let tracksResult = service.getRecentTracks(username: "verbog", limit: 20)
-                async let artistsResult = service.getTopArtists(username: "verbog", limit: 12)
-                async let albumsResult = service.getTopAlbums(username: "verbog", limit: 12)
-                async let tracksTopResult = service.getTopTracks(username: "verbog", limit: 12)
-                async let userResult = service.getUserInfo(username: "verbog")
+                async let tracksResult = service.getRecentTracks(username: Constants.lastFMUsername, limit: 20)
+                async let artistsResult = service.getTopArtists(username: Constants.lastFMUsername, limit: 12)
+                async let albumsResult = service.getTopAlbums(username: Constants.lastFMUsername, limit: 12)
+                async let tracksTopResult = service.getTopTracks(username: Constants.lastFMUsername, limit: 12)
+                async let userResult = service.getUserInfo(username: Constants.lastFMUsername)
                 
                 let (tracks, _, _) = try await tracksResult
                 let artists = try await artistsResult
@@ -148,9 +148,9 @@ class AppState: ObservableObject {
                 self.loadedTabs = Set(SidebarTab.allCases)
                 
                 // Fetch menu bar stats from API
-                async let todayCount = self.service.getScrobbleCount(username: "verbog", period: "7day")
-                async let weekCount = self.service.getScrobbleCount(username: "verbog", period: "1month")
-                async let monthCount = self.service.getScrobbleCount(username: "verbog", period: "3month")
+                async let todayCount = self.service.getScrobbleCount(username: Constants.lastFMUsername, period: "7day")
+                async let weekCount = self.service.getScrobbleCount(username: Constants.lastFMUsername, period: "1month")
+                async let monthCount = self.service.getScrobbleCount(username: Constants.lastFMUsername, period: "3month")
                 self.menuBarTodayCount = try await todayCount
                 self.menuBarWeekCount = try await weekCount
                 self.menuBarMonthCount = try await monthCount
@@ -170,12 +170,12 @@ class AppState: ObservableObject {
             do {
                 switch tab {
                 case .recent:
-                    let (tracks, _, _) = try await service.getRecentTracks(username: "verbog", limit: 20)
+                    let (tracks, _, _) = try await service.getRecentTracks(username: Constants.lastFMUsername, limit: 20)
                     self.recentTracks = tracks
                 case .artists:
-                    self.topArtists = try await service.getTopArtists(username: "verbog", limit: 12)
+                    self.topArtists = try await service.getTopArtists(username: Constants.lastFMUsername, limit: 12)
                 case .albums:
-                    self.topAlbums = try await service.getTopAlbums(username: "verbog", limit: 12)
+                    self.topAlbums = try await service.getTopAlbums(username: Constants.lastFMUsername, limit: 12)
                 case .stats:
                     // Stats loads its own data independently
                     break

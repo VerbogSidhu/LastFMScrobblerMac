@@ -7,142 +7,109 @@ struct ReportsView: View {
     @State private var report: ListeningReport?
     @State private var isGenerating = false
     @State private var currentTask: Task<Void, Never>?
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Period Picker
-            HStack(spacing: 8) {
+            HStack(spacing: DS.Spacing.md) {
                 ForEach(TimePeriod.allCases) { period in
                     Button {
                         selectedPeriod = period
                         generateReport()
                     } label: {
                         Text(period.rawValue)
-                            .font(.system(size: 11, weight: selectedPeriod == period ? .semibold : .regular))
-                            .foregroundStyle(selectedPeriod == period ? .white : .white.opacity(0.4))
+                            .font(DS.Fonts.caption(11).weight(selectedPeriod == period ? .semibold : .regular))
+                            .foregroundStyle(selectedPeriod == period ? DS.Colors.textPrimary : DS.Colors.textMuted)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
                             .background(
-                                selectedPeriod == period
-                                    ? .white.opacity(0.1)
-                                    : .clear,
-                                in: RoundedRectangle(cornerRadius: 6)
+                                selectedPeriod == period ? Color.white.opacity(0.1) : .clear,
+                                in: RoundedRectangle(cornerRadius: DS.Radius.sm)
                             )
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel(period.rawValue)
+                    .accessibilityAddTraits(selectedPeriod == period ? .isSelected : [])
                 }
-                
+
                 Spacer()
-                
+
                 if let report {
-                    Button {
+                    SecondaryButton(title: "Copy", icon: "doc.on.doc") {
                         let text = report.formattedText()
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(text, forType: .string)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "doc.on.doc")
-                            Text("Copy")
-                        }
-                        .font(.system(size: 11))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
                     }
-                    .buttonStyle(.plain)
+                    .accessibilityLabel("Copy report to clipboard")
                 }
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 12)
-            
+            .padding(.horizontal, DS.Spacing.xxxl)
+            .padding(.vertical, DS.Spacing.lg)
+
             if isGenerating {
-                Spacer()
-                ProgressView()
-                    .scaleEffect(0.8)
-                Text("Generating report…")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 8)
-                Spacer()
+                LoadingState(message: "Generating report…")
             } else if let report {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
                         // Summary Cards
                         ReportSummaryCards(report: report)
-                        
+
                         // Daily Scrobble Chart
                         if !report.scrobblesPerDay.isEmpty {
                             ScrobbleChart(data: report.scrobblesPerDay, period: selectedPeriod)
                         }
-                        
+
                         // Top Lists
-                        HStack(alignment: .top, spacing: 16) {
+                        HStack(alignment: .top, spacing: DS.Spacing.lg) {
                             if !report.topArtists.isEmpty {
-                                ReportTopList(
-                                    title: "Top Artists",
-                                    icon: "person.fill",
-                                    items: report.topArtists.prefix(5).enumerated().map { (i, a) in
-                                        ReportListItem(rank: i + 1, primary: a.name, secondary: "\(a.count) scrobbles")
-                                    }
-                                )
+                                RankedList(title: "Top Artists", icon: "person.fill", items: report.topArtists.prefix(5), id: \.name) { i, a in
+                                    RankedListRow(rank: i, primary: a.name, secondary: "\(a.count) scrobbles")
+                                }
                             }
-                            
+
                             if !report.topAlbums.isEmpty {
-                                ReportTopList(
-                                    title: "Top Albums",
-                                    icon: "square.stack.fill",
-                                    items: report.topAlbums.prefix(5).enumerated().map { (i, a) in
-                                        ReportListItem(rank: i + 1, primary: a.name, secondary: "\(a.artist) · \(a.count)")
-                                    }
-                                )
+                                RankedList(title: "Top Albums", icon: "square.stack.fill", items: report.topAlbums.prefix(5), id: \.name) { i, a in
+                                    RankedListRow(rank: i, primary: a.name, secondary: "\(a.artist) · \(a.count)")
+                                }
                             }
-                            
+
                             if !report.topTracks.isEmpty {
-                                ReportTopList(
-                                    title: "Top Tracks",
-                                    icon: "music.note",
-                                    items: report.topTracks.prefix(5).enumerated().map { (i, t) in
-                                        ReportListItem(rank: i + 1, primary: t.name, secondary: "\(t.artist) · \(t.count)")
-                                    }
-                                )
+                                RankedList(title: "Top Tracks", icon: "music.note", items: report.topTracks.prefix(5), id: \.name) { i, t in
+                                    RankedListRow(rank: i, primary: t.name, secondary: "\(t.artist) · \(t.count)")
+                                }
                             }
                         }
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 24)
+                    .padding(.horizontal, DS.Spacing.xxxl)
+                    .padding(.bottom, DS.Spacing.xxxl)
                 }
             } else {
-                Spacer()
-                Text("Select a period to generate a report")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                Spacer()
+                EmptyState(
+                    icon: "doc.text",
+                    title: "Select a period to generate a report"
+                )
             }
         }
         .onAppear { generateReport() }
         .onDisappear { currentTask?.cancel() }
     }
-    
+
     private func generateReport() {
-        // Cancel any in-flight task
         currentTask?.cancel()
-        
         isGenerating = true
         report = nil
-        
+
         let period = selectedPeriod
-        
+
         currentTask = Task {
             let newReport = await ListeningReport.generate(
-                username: "verbog",
+                username: Constants.lastFMUsername,
                 service: appState.service,
                 period: period
             )
-            
-            // Only update if this task wasn't cancelled and period hasn't changed
+
             guard !Task.isCancelled, selectedPeriod == period else { return }
-            
+
             await MainActor.run {
                 report = newReport
                 isGenerating = false
@@ -155,24 +122,24 @@ struct ReportsView: View {
 
 struct ReportSummaryCards: View {
     let report: ListeningReport
-    
+
     var body: some View {
-        HStack(spacing: 12) {
-            SummaryCard(icon: "waveform", value: "\(report.totalScrobbles)", label: "Scrobbles", color: .purple)
-            SummaryCard(icon: "person.fill", value: "\(report.uniqueArtists)", label: "Artists", color: .blue)
-            SummaryCard(icon: "square.stack.fill", value: "\(report.uniqueAlbums)", label: "Albums", color: .orange)
-            SummaryCard(icon: "music.note", value: "\(report.uniqueTracks)", label: "Tracks", color: .green)
-            
+        HStack(spacing: DS.Spacing.lg) {
+            SummaryCard(icon: "waveform", value: "\(report.totalScrobbles)", label: "Scrobbles", color: DS.Colors.accent)
+            SummaryCard(icon: "person.fill", value: "\(report.uniqueArtists)", label: "Artists", color: DS.Colors.info)
+            SummaryCard(icon: "square.stack.fill", value: "\(report.uniqueAlbums)", label: "Albums", color: DS.Colors.warning)
+            SummaryCard(icon: "music.note", value: "\(report.uniqueTracks)", label: "Tracks", color: DS.Colors.success)
+
             if let peak = report.peakDay, peak.count > 0 {
                 SummaryCard(
                     icon: "flame.fill",
                     value: "\(peak.count)",
                     label: "Peak Day",
-                    color: .red,
+                    color: DS.Colors.error,
                     sub: peakDateFormatter.string(from: peak.date)
                 )
             }
-            
+
             SummaryCard(
                 icon: "chart.line.uptrend.xyaxis",
                 value: String(format: "%.1f", report.averagePerDay),
@@ -181,7 +148,7 @@ struct ReportSummaryCards: View {
             )
         }
     }
-    
+
     private var peakDateFormatter: DateFormatter {
         let f = DateFormatter()
         f.dateFormat = "MMM d"
@@ -195,28 +162,29 @@ struct SummaryCard: View {
     let label: String
     let color: Color
     var sub: String? = nil
-    
+
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: DS.Spacing.sm) {
             Image(systemName: icon)
-                .font(.system(size: 14))
+                .font(DS.Fonts.body(14))
                 .foregroundStyle(color)
             Text(value)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .font(DS.Fonts.statNumber(18))
+                .foregroundStyle(DS.Colors.textPrimary)
             Text(label)
-                .font(.system(size: 9))
-                .foregroundStyle(.white.opacity(0.4))
+                .font(DS.Fonts.caption(9))
+                .foregroundStyle(DS.Colors.textMuted)
             if let sub {
                 Text(sub)
-                    .font(.system(size: 8))
-                    .foregroundStyle(.white.opacity(0.3))
+                    .font(DS.Fonts.caption(8))
+                    .foregroundStyle(DS.Colors.textMuted.opacity(0.7))
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.04), lineWidth: 1))
+        .padding(.vertical, DS.Spacing.lg)
+        .cardStyle(cornerRadius: DS.Radius.lg)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(label): \(value)")
     }
 }
 
@@ -225,70 +193,69 @@ struct SummaryCard: View {
 struct ScrobbleChart: View {
     let data: [(date: Date, count: Int)]
     let period: TimePeriod
-    
+
     private var maxCount: Int {
         data.map(\.count).max() ?? 1
     }
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Scrobbles Over Time")
-                .font(.system(size: 13, weight: .semibold))
-            
-            if data.isEmpty {
-                Text("No data for this period")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .frame(height: 120)
-            } else {
-                GeometryReader { geo in
-                    let barWidth = max(2, (geo.size.width - CGFloat(data.count) * 1) / CGFloat(data.count))
-                    let showLabels = data.count <= 31
-                    
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(alignment: .bottom, spacing: 1) {
-                            ForEach(Array(data.enumerated()), id: \.offset) { idx, entry in
-                                VStack(spacing: 2) {
-                                    RoundedRectangle(cornerRadius: 1.5)
-                                        .fill(barColor(for: entry.count))
-                                        .frame(
-                                            width: barWidth,
-                                            height: max(1, CGFloat(entry.count) / CGFloat(max(maxCount, 1)) * 100)
-                                        )
-                                    
-                                    if showLabels && shouldShowLabel(idx: idx) {
-                                        Text(dateLabel(entry.date))
-                                            .font(.system(size: 7))
-                                            .foregroundStyle(.white.opacity(0.3))
-                                            .rotationEffect(.degrees(-45), anchor: .topTrailing)
+        Card {
+            VStack(alignment: .leading, spacing: DS.Spacing.md) {
+                SectionHeader(title: "Scrobbles Over Time", icon: "chart.bar")
+
+                if data.isEmpty {
+                    Text("No data for this period")
+                        .font(DS.Fonts.caption())
+                        .foregroundStyle(DS.Colors.textSecondary)
+                        .frame(height: 120)
+                } else {
+                    GeometryReader { geo in
+                        let barWidth = max(2, (geo.size.width - CGFloat(data.count) * 1) / CGFloat(data.count))
+                        let showLabels = data.count <= 31
+
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(alignment: .bottom, spacing: 1) {
+                                ForEach(Array(data.enumerated()), id: \.offset) { idx, entry in
+                                    VStack(spacing: 2) {
+                                        RoundedRectangle(cornerRadius: 1.5)
+                                            .fill(barColor(for: entry.count))
+                                            .frame(
+                                                width: barWidth,
+                                                height: max(1, CGFloat(entry.count) / CGFloat(max(maxCount, 1)) * 100)
+                                            )
+
+                                        if showLabels && shouldShowLabel(idx: idx) {
+                                            Text(dateLabel(entry.date))
+                                                .font(DS.Fonts.caption(7))
+                                                .foregroundStyle(DS.Colors.textMuted)
+                                                .rotationEffect(.degrees(-45), anchor: .topTrailing)
+                                        }
                                     }
                                 }
                             }
+                            .frame(height: 120)
                         }
-                        .frame(height: 120)
                     }
+                    .frame(height: 135)
+                    .accessibilityLabel("Scrobble chart showing \(data.count) data points")
                 }
-                .frame(height: 135)
             }
         }
-        .padding(14)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.04), lineWidth: 1))
     }
-    
+
     private func barColor(for count: Int) -> LinearGradient {
         if count == 0 {
-            return LinearGradient(colors: [.white.opacity(0.03)], startPoint: .top, endPoint: .bottom)
+            return LinearGradient(colors: [DS.Colors.inputBackground], startPoint: .top, endPoint: .bottom)
         }
-        return LinearGradient(colors: [.purple, .purple.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+        return LinearGradient(colors: [DS.Colors.accent, DS.Colors.accent.opacity(0.6)], startPoint: .top, endPoint: .bottom)
     }
-    
+
     private func shouldShowLabel(idx: Int) -> Bool {
         let maxLabels = 10
         let step = max(1, data.count / maxLabels)
         return idx % step == 0 || idx == data.count - 1
     }
-    
+
     private func dateLabel(_ date: Date) -> String {
         let f = DateFormatter()
         f.locale = Locale.current
@@ -307,59 +274,5 @@ struct ScrobbleChart: View {
             f.dateFormat = "MMM ''yy"
         }
         return f.string(from: date)
-    }
-}
-
-// MARK: - Top List
-
-struct ReportListItem: Identifiable {
-    let id = UUID()
-    let rank: Int
-    let primary: String
-    let secondary: String
-}
-
-struct ReportTopList: View {
-    let title: String
-    let icon: String
-    let items: [ReportListItem]
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.purple)
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-            }
-            
-            ForEach(items) { item in
-                HStack(spacing: 8) {
-                    Text("\(item.rank)")
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.3))
-                        .frame(width: 16, alignment: .trailing)
-                    
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(item.primary)
-                            .font(.system(size: 12, weight: .medium))
-                            .lineLimit(1)
-                        Text(item.secondary)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                    
-                    Spacer()
-                }
-                .padding(.vertical, 4)
-                .padding(.horizontal, 8)
-                .background(.white.opacity(0.02), in: RoundedRectangle(cornerRadius: 6))
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.04), lineWidth: 1))
     }
 }
