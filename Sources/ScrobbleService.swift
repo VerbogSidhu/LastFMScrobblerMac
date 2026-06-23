@@ -42,7 +42,7 @@ class ScrobbleService {
         return sig
     }
     
-    // MARK: - URL Helper
+    // MARK: - URL / Request Helpers
     
     /// Safely constructs the base Last.fm API URL, throwing if the URL is invalid.
     private func lastFMURL() throws -> URL {
@@ -50,6 +50,19 @@ class ScrobbleService {
             throw ScrobbleError.invalidURL
         }
         return url
+    }
+    
+    /// Builds a POST URLRequest with form-encoded body from the given parameters.
+    private func buildPOSTRequest(url: URL, parameters: [String: String]) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = parameters
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: "&")
+            .data(using: .utf8)
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        return request
     }
     
     // MARK: - Authentication
@@ -86,12 +99,8 @@ class ScrobbleService {
         params["api_sig"] = apiSignature(params: params)
         params["format"] = "json"
         
-        let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
-            .joined(separator: "&")
-        guard let url = URL(string: "\(baseURL)?\(queryString)") else {
-            throw ScrobbleError.invalidURL
-        }
-        let (data, _) = try await session.data(from: url)
+        let request = try buildPOSTRequest(url: lastFMURL(), parameters: params)
+        let (data, _) = try await session.data(for: request)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         
         guard let session = json?["session"] as? [String: Any],
@@ -121,13 +130,7 @@ class ScrobbleService {
         params["api_sig"] = apiSignature(params: params)
         params["format"] = "json"
         
-        let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
-            .joined(separator: "&")
-        
-        var request = URLRequest(url: try lastFMURL())
-        request.httpMethod = "POST"
-        request.httpBody = queryString.data(using: .utf8)
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let request = try buildPOSTRequest(url: lastFMURL(), parameters: params)
         
         let (data, response) = try await session.data(for: request)
         let httpResponse = response as? HTTPURLResponse
@@ -164,13 +167,7 @@ class ScrobbleService {
         params["api_sig"] = apiSignature(params: params)
         params["format"] = "json"
         
-        let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
-            .joined(separator: "&")
-        
-        var request = URLRequest(url: try lastFMURL())
-        request.httpMethod = "POST"
-        request.httpBody = queryString.data(using: .utf8)
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let request = try buildPOSTRequest(url: lastFMURL(), parameters: params)
         
         let (_, response) = try await session.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -191,13 +188,7 @@ class ScrobbleService {
         params["api_sig"] = apiSignature(params: params)
         params["format"] = "json"
         
-        let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
-            .joined(separator: "&")
-        
-        var request = URLRequest(url: try lastFMURL())
-        request.httpMethod = "POST"
-        request.httpBody = queryString.data(using: .utf8)
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let request = try buildPOSTRequest(url: lastFMURL(), parameters: params)
         
         let (_, response) = try await session.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -220,13 +211,7 @@ class ScrobbleService {
         params["api_sig"] = apiSignature(params: params)
         params["format"] = "json"
         
-        let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
-            .joined(separator: "&")
-        
-        var request = URLRequest(url: try lastFMURL())
-        request.httpMethod = "POST"
-        request.httpBody = queryString.data(using: .utf8)
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        let request = try buildPOSTRequest(url: lastFMURL(), parameters: params)
         
         let (data, response) = try await session.data(for: request)
         let httpResponse = response as? HTTPURLResponse
