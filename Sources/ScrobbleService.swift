@@ -42,6 +42,16 @@ class ScrobbleService {
         return sig
     }
     
+    // MARK: - URL Helper
+    
+    /// Safely constructs the base Last.fm API URL, throwing if the URL is invalid.
+    private func lastFMURL() throws -> URL {
+        guard let url = URL(string: baseURL) else {
+            throw ScrobbleError.invalidURL
+        }
+        return url
+    }
+    
     // MARK: - Authentication
     
     /// Step 1: Get a request token (no signature needed).
@@ -233,12 +243,14 @@ enum ScrobbleError: LocalizedError {
     case noToken
     case noSession
     case apiError(Int)
+    case invalidURL
     
     var errorDescription: String? {
         switch self {
         case .noToken: return "Failed to get request token from Last.fm"
         case .noSession: return "Failed to get session — did you authorize?"
         case .apiError(let code): return "Last.fm API error: \(code)"
+        case .invalidURL: return "Invalid URL configuration"
         }
     }
 }

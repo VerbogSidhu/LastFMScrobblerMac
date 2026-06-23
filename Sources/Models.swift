@@ -1,5 +1,17 @@
 import Foundation
 
+// MARK: - Shared Models
+
+struct LastFMImage: Codable {
+    let text: String
+    let size: String
+    
+    enum CodingKeys: String, CodingKey {
+        case text = "#text"
+        case size
+    }
+}
+
 // MARK: - Models
 
 struct RecentTrack: Identifiable, Codable {
@@ -195,29 +207,19 @@ struct LastFMTrack: Codable {
         case name, artist, album, image, date
         case attr = "@attr"
     }
-    
+
     struct LastFMNameValue: Codable {
         let text: String
-        
+
         enum CodingKeys: String, CodingKey {
             case text = "#text"
         }
     }
-    
-    struct LastFMImage: Codable {
-        let text: String
-        let size: String
-        
-        enum CodingKeys: String, CodingKey {
-            case text = "#text"
-            case size
-        }
-    }
-    
+
     struct LastFMDate: Codable {
         let uts: String
     }
-    
+
     struct TrackAttr: Codable {
         let nowplaying: String?
     }
@@ -247,19 +249,9 @@ struct LastFMArtist: Codable {
         case name, playcount, image
         case attr = "@attr"
     }
-    
+
     struct ArtistAttr: Codable {
         let rank: String
-    }
-    
-    struct LastFMImage: Codable {
-        let text: String
-        let size: String
-        
-        enum CodingKeys: String, CodingKey {
-            case text = "#text"
-            case size
-        }
     }
 }
 
@@ -288,23 +280,13 @@ struct LastFMAlbum: Codable {
         case name, artist, playcount, image
         case attr = "@attr"
     }
-    
+
     struct AlbumArtist: Codable {
         let name: String
     }
-    
+
     struct AlbumAttr: Codable {
         let rank: String
-    }
-    
-    struct LastFMImage: Codable {
-        let text: String
-        let size: String
-        
-        enum CodingKeys: String, CodingKey {
-            case text = "#text"
-            case size
-        }
     }
 }
 
@@ -326,15 +308,5 @@ struct LastFMUser: Codable {
         case artistCount = "artist_count"
         case albumCount = "album_count"
         case trackCount = "track_count"
-    }
-    
-    struct LastFMImage: Codable {
-        let text: String
-        let size: String
-        
-        enum CodingKeys: String, CodingKey {
-            case text = "#text"
-            case size
-        }
     }
 }

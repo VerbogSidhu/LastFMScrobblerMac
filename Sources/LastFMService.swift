@@ -5,6 +5,23 @@ class LastFMService {
     private let baseURL = "https://ws.audioscrobbler.com/2.0/"
     private let imageService = ArtistImageService.shared
     
+    // MARK: - Safe URL Builder
+    
+    /// Builds a URL safely using URLComponents. Throws if the URL cannot be constructed.
+    private func buildURL(method: String, parameters: [String: String]) throws -> URL {
+        var components = URLComponents(string: baseURL)!
+        components.queryItems = [
+            URLQueryItem(name: "method", value: method),
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "format", value: "json")
+        ] + parameters.map { URLQueryItem(name: $0.key, value: $0.value) }
+        
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+        return url
+    }
+    
     /// URLSession with in-memory + disk caching (5 min memory, 30 min disk).
     /// Avoids re-fetching the same data when switching tabs.
     private let session: URLSession = {
@@ -23,7 +40,7 @@ class LastFMService {
     // MARK: - Recent Tracks
     
     func getRecentTracks(username: String, limit: Int, page: Int = 1) async throws -> (tracks: [RecentTrack], totalPages: Int, total: Int) {
-        let url = URL(string: "\(baseURL)?method=user.getrecenttracks&user=\(username)&api_key=\(apiKey)&format=json&limit=\(limit)&page=\(page)")!
+        let url = try buildURL(method: "user.getrecenttracks", parameters: ["user": username, "limit": "\(limit)", "page": "\(page)"])
         let (data, _) = try await session.data(from: url)
         let response = try JSONDecoder().decode(RecentTracksResponse.self, from: data)
         
@@ -63,7 +80,7 @@ class LastFMService {
     // MARK: - Top Artists
     
     func getTopArtists(username: String, limit: Int, period: String = "overall") async throws -> [TopArtist] {
-        let url = URL(string: "\(baseURL)?method=user.gettopartists&user=\(username)&api_key=\(apiKey)&format=json&limit=\(limit)&period=\(period)")!
+        let url = try buildURL(method: "user.gettopartists", parameters: ["user": username, "limit": "\(limit)", "period": period])
         let (data, _) = try await session.data(from: url)
         let response = try JSONDecoder().decode(TopArtistsResponse.self, from: data)
         
@@ -100,7 +117,7 @@ class LastFMService {
     // MARK: - Top Albums
     
     func getTopAlbums(username: String, limit: Int, period: String = "overall") async throws -> [TopAlbum] {
-        let url = URL(string: "\(baseURL)?method=user.gettopalbums&user=\(username)&api_key=\(apiKey)&format=json&limit=\(limit)&period=\(period)")!
+        let url = try buildURL(method: "user.gettopalbums", parameters: ["user": username, "limit": "\(limit)", "period": period])
         let (data, _) = try await session.data(from: url)
         let response = try JSONDecoder().decode(TopAlbumsResponse.self, from: data)
         
@@ -118,7 +135,7 @@ class LastFMService {
     // MARK: - Top Tracks
     
     func getTopTracks(username: String, limit: Int, period: String = "overall") async throws -> [TopTrack] {
-        let url = URL(string: "\(baseURL)?method=user.gettoptracks&user=\(username)&api_key=\(apiKey)&format=json&limit=\(limit)&period=\(period)")!
+        let url = try buildURL(method: "user.gettoptracks", parameters: ["user": username, "limit": "\(limit)", "period": period])
         let (data, _) = try await session.data(from: url)
         let response = try JSONDecoder().decode(TopTracksResponse.self, from: data)
         
@@ -136,7 +153,7 @@ class LastFMService {
     // MARK: - User Info
     
     func getUserInfo(username: String) async throws -> UserInfo {
-        let url = URL(string: "\(baseURL)?method=user.getinfo&user=\(username)&api_key=\(apiKey)&format=json")!
+        let url = try buildURL(method: "user.getinfo", parameters: ["user": username])
         let (data, _) = try await session.data(from: url)
         let response = try JSONDecoder().decode(UserInfoResponse.self, from: data)
         
@@ -155,7 +172,7 @@ class LastFMService {
     
     /// Get scrobble count for a specific period by summing top artists' playcounts.
     func getScrobbleCount(username: String, period: String) async throws -> Int {
-        let url = URL(string: "\(baseURL)?method=user.gettopartists&user=\(username)&api_key=\(apiKey)&format=json&limit=50&period=\(period)")!
+        let url = try buildURL(method: "user.gettopartists", parameters: ["user": username, "limit": "50", "period": period])
         let (data, _) = try await session.data(from: url)
         let response = try JSONDecoder().decode(TopArtistsResponse.self, from: data)
         return response.topartists.artist.reduce(0) { $0 + (Int($1.playcount) ?? 0) }
