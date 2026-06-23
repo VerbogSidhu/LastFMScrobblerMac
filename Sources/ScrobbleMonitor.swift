@@ -31,6 +31,15 @@ class ScrobbleMonitor: ObservableObject {
     private let pollQueue = DispatchQueue(label: "com.verbog.lastfm.poll", qos: .utility)
     weak var statsManager: ScrobbleStatsManager?
     
+    // Thread safety: protects all shared mutable state accessed from pollQueue
+    private let stateLock = NSLock()
+    
+    private func withStateLock<T>(_ body: () throws -> T) rethrows -> T {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return try body()
+    }
+    
     // Track state
     private var currentTrackID: Int?
     private var trackStartTime: Date?
@@ -185,18 +194,20 @@ class ScrobbleMonitor: ObservableObject {
         pollTimer?.invalidate()
         pollTimer = nil
         isScrobbling = false
-        currentTrackID = nil
-        trackStartTime = nil
-        hasScrobbled = false
-        accumulatedPlayTime = 0
-        wasPlaying = false
+        withStateLock {
+            currentTrackID = nil
+            trackStartTime = nil
+            hasScrobbled = false
+            accumulatedPlayTime = 0
+            wasPlaying = false
+            durationCache = [:]
+            lastPlayerPosition = 0
+            lastNowPlayingTime = nil
+            nowPlayingRetryCount = 0
+        }
         currentTrackName = nil
         currentArtist = nil
         currentAlbumArt = nil
-        durationCache = [:]
-        lastPlayerPosition = 0
-        lastNowPlayingTime = nil
-        nowPlayingRetryCount = 0
     }
     
     private func poll() {
@@ -219,9 +230,35 @@ class ScrobbleMonitor: ObservableObject {
         pollQueue.async { [weak self] in
             guard let self = self else { return }
             
+            // Snapshot shared state under lock for safe access on pollQueue
+            var (currentTrackID, trackStartTime, hasScrobbled, accumulatedPlayTime,
+                 lastPollTime, wasPlaying, lastPlayerPosition, lastNowPlayingTime,
+                 nowPlayingRetryCount, durationCache) = self.withStateLock {
+                (self.currentTrackID, self.trackStartTime, self.hasScrobbled,
+                 self.accumulatedPlayTime, self.lastPollTime, self.wasPlaying,
+                 self.lastPlayerPosition, self.lastNowPlayingTime,
+                 self.nowPlayingRetryCount, self.durationCache)
+            }
+            
+            // Write back shared state to self on exit (including early returns)
+            defer {
+                self.withStateLock {
+                    self.currentTrackID = currentTrackID
+                    self.trackStartTime = trackStartTime
+                    self.hasScrobbled = hasScrobbled
+                    self.accumulatedPlayTime = accumulatedPlayTime
+                    self.lastPollTime = lastPollTime
+                    self.wasPlaying = wasPlaying
+                    self.lastPlayerPosition = lastPlayerPosition
+                    self.lastNowPlayingTime = lastNowPlayingTime
+                    self.nowPlayingRetryCount = nowPlayingRetryCount
+                    self.durationCache = durationCache
+                }
+            }
+            
             let info = self.detector.getCurrentTrack()
             
-            // Read current state for comparison (safe: only accessed from pollQueue or main thread sequentially)
+            // Read current @Published state for comparison
             let oldName = self.currentTrackName
             let oldArtist = self.currentArtist
             
@@ -238,15 +275,13 @@ class ScrobbleMonitor: ObservableObject {
             
             guard let trackInfo = info else {
                 // Nothing playing
-                if self.currentTrackID != nil {
+                if currentTrackID != nil {
                     self.log("Track ended — resetting state")
-                    DispatchQueue.main.async {
-                        self.currentTrackID = nil
-                        self.trackStartTime = nil
-                        self.hasScrobbled = false
-                        self.accumulatedPlayTime = 0
-                        self.wasPlaying = false
-                    }
+                    currentTrackID = nil
+                    trackStartTime = nil
+                    hasScrobbled = false
+                    accumulatedPlayTime = 0
+                    wasPlaying = false
                 }
                 return
             }
@@ -256,23 +291,23 @@ class ScrobbleMonitor: ObservableObject {
             
             // Cache duration if non-zero
             if trackInfo.duration > 0 {
-                self.durationCache[trackID] = trackInfo.duration
+                durationCache[trackID] = trackInfo.duration
             }
             // Use cached duration if current is 0
-            let effectiveDuration = trackInfo.duration > 0 ? trackInfo.duration : (self.durationCache[trackID] ?? 0)
+            let effectiveDuration = trackInfo.duration > 0 ? trackInfo.duration : (durationCache[trackID] ?? 0)
             
             // Track changed
-            if trackID != self.currentTrackID {
+            if trackID != currentTrackID {
                 self.log("New track: \(trackInfo.name) — \(trackInfo.artist) [ID:\(trackID), dur:\(effectiveDuration)s, state:\(trackInfo.playerState)]")
-                self.currentTrackID = trackID
-                self.trackStartTime = Date()
-                self.hasScrobbled = false
-                self.accumulatedPlayTime = 0
-                self.lastPollTime = Date()
-                self.wasPlaying = isPlaying
-                self.lastPlayerPosition = trackInfo.playerPosition
-                self.lastNowPlayingTime = nil  // reset refresh timer
-                self.nowPlayingRetryCount = 0
+                currentTrackID = trackID
+                trackStartTime = Date()
+                hasScrobbled = false
+                accumulatedPlayTime = 0
+                lastPollTime = Date()
+                wasPlaying = isPlaying
+                lastPlayerPosition = trackInfo.playerPosition
+                lastNowPlayingTime = nil  // reset refresh timer
+                nowPlayingRetryCount = 0
                 
                 // Send now-playing update
                 self.sendNowPlaying(trackInfo: trackInfo, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
@@ -287,61 +322,61 @@ class ScrobbleMonitor: ObservableObject {
                 // Position dropped from near end (>60% of duration) to near start (<30%)
                 if effectiveDuration > 0 {
                     let posRatio = Double(trackInfo.playerPosition) / Double(effectiveDuration)
-                    let lastRatio = Double(self.lastPlayerPosition) / Double(effectiveDuration)
+                    let lastRatio = Double(lastPlayerPosition) / Double(effectiveDuration)
                     
                     if lastRatio > 0.6 && posRatio < 0.3 {
-                        self.log("Loop detected via position reset (\(self.lastPlayerPosition)s → \(trackInfo.playerPosition)s)")
+                        self.log("Loop detected via position reset (\(lastPlayerPosition)s → \(trackInfo.playerPosition)s)")
                         
                         // Send now-playing update for the new loop iteration
-                        self.lastNowPlayingTime = nil
-                        self.nowPlayingRetryCount = 0
+                        lastNowPlayingTime = nil
+                        nowPlayingRetryCount = 0
                         self.sendNowPlaying(trackInfo: trackInfo, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
                         
                         // Reset scrobble state for new loop
-                        self.hasScrobbled = false
-                        self.accumulatedPlayTime = 0
-                        self.trackStartTime = now
+                        hasScrobbled = false
+                        accumulatedPlayTime = 0
+                        trackStartTime = now
                     }
                 }
                 
                 // Fallback: if accumulated time exceeds track duration without
                 // position reset detection, still reset for next scrobble
-                if self.hasScrobbled && effectiveDuration > 0 && self.accumulatedPlayTime >= Double(effectiveDuration) {
-                    self.log("Track looped (fallback: \(Int(self.accumulatedPlayTime))s played, \(effectiveDuration)s track) — resetting for next scrobble")
-                    self.hasScrobbled = false
-                    self.accumulatedPlayTime = 0
-                    self.trackStartTime = now
+                if hasScrobbled && effectiveDuration > 0 && accumulatedPlayTime >= Double(effectiveDuration) {
+                    self.log("Track looped (fallback: \(Int(accumulatedPlayTime))s played, \(effectiveDuration)s track) — resetting for next scrobble")
+                    hasScrobbled = false
+                    accumulatedPlayTime = 0
+                    trackStartTime = now
                 }
                 
-                if let last = self.lastPollTime {
-                    self.accumulatedPlayTime += now.timeIntervalSince(last)
+                if let last = lastPollTime {
+                    accumulatedPlayTime += now.timeIntervalSince(last)
                 }
-                self.lastPollTime = now
-                self.lastPlayerPosition = trackInfo.playerPosition
-                self.wasPlaying = true
+                lastPollTime = now
+                lastPlayerPosition = trackInfo.playerPosition
+                wasPlaying = true
                 
                 // Periodic now-playing refresh — keeps Last.fm status alive
-                if let lastNP = self.lastNowPlayingTime,
+                if let lastNP = lastNowPlayingTime,
                    now.timeIntervalSince(lastNP) >= self.nowPlayingRefreshInterval {
                     self.log("Periodic now-playing refresh (every \(Int(self.nowPlayingRefreshInterval))s)")
                     self.sendNowPlaying(trackInfo: trackInfo, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
                 }
-            } else if self.wasPlaying && !isPlaying {
+            } else if wasPlaying && !isPlaying {
                 // Just paused
-                self.log("Track paused — accumulated \(Int(self.accumulatedPlayTime))s so far")
-                self.lastPollTime = Date()
-                self.wasPlaying = false
+                self.log("Track paused — accumulated \(Int(accumulatedPlayTime))s so far")
+                lastPollTime = Date()
+                wasPlaying = false
             }
             
             // Check scrobble conditions
-            if !self.hasScrobbled && isPlaying && effectiveDuration > 30 {
+            if !hasScrobbled && isPlaying && effectiveDuration > 30 {
                 let threshold = min(Double(effectiveDuration) / 2.0, 240.0) // half or 4 min
                 
-                if self.accumulatedPlayTime >= threshold, let startTime = self.trackStartTime {
-                    self.hasScrobbled = true
+                if accumulatedPlayTime >= threshold, let startTime = trackStartTime {
+                    hasScrobbled = true
                     let timestamp = Int(startTime.timeIntervalSince1970)
                     
-                    self.log("Scrobble triggered! \(trackInfo.name) — \(trackInfo.artist) (played \(Int(self.accumulatedPlayTime))s of \(trackInfo.duration)s, threshold: \(Int(threshold))s)")
+                    self.log("Scrobble triggered! \(trackInfo.name) — \(trackInfo.artist) (played \(Int(accumulatedPlayTime))s of \(trackInfo.duration)s, threshold: \(Int(threshold))s)")
                     
                     Task {
                         do {
@@ -379,9 +414,9 @@ class ScrobbleMonitor: ObservableObject {
                     }
                 } else if isPlaying {
                     // Log progress periodically
-                    let remaining = Int(threshold - self.accumulatedPlayTime)
+                    let remaining = Int(threshold - accumulatedPlayTime)
                     if remaining > 0 && remaining % 30 < 5 {
-                        self.log("Play time: \(Int(self.accumulatedPlayTime))s / \(Int(threshold))s threshold — \(remaining)s to scrobble")
+                        self.log("Play time: \(Int(accumulatedPlayTime))s / \(Int(threshold))s threshold — \(remaining)s to scrobble")
                     }
                 }
             }
@@ -395,7 +430,9 @@ class ScrobbleMonitor: ObservableObject {
         guard authStatus == .authenticated, let sessionKey = sessionKey else { return }
         guard let info = detector.getCurrentTrack(), info.playerState == "playing" else { return }
         
-        let effectiveDuration = info.duration > 0 ? info.duration : (durationCache[info.databaseID] ?? 0)
+        let effectiveDuration = withStateLock {
+            info.duration > 0 ? info.duration : (durationCache[info.databaseID] ?? 0)
+        }
         log("Manual now-playing refresh triggered")
         sendNowPlaying(trackInfo: info, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
     }
@@ -413,15 +450,20 @@ class ScrobbleMonitor: ObservableObject {
                     sessionKey: sessionKey
                 )
                 self.log("Now-playing sent: \(trackInfo.name)")
-                self.lastNowPlayingTime = Date()
-                self.nowPlayingRetryCount = 0
+                self.withStateLock {
+                    self.lastNowPlayingTime = Date()
+                    self.nowPlayingRetryCount = 0
+                }
             } catch {
                 self.log("Now-playing failed: \(error)")
                 // Retry up to 3 times with backoff
-                self.nowPlayingRetryCount += 1
-                if self.nowPlayingRetryCount <= self.nowPlayingMaxRetries {
-                    let delay = Double(self.nowPlayingRetryCount) * 5.0 // 5s, 10s, 15s
-                    self.log("Now-playing retry \(self.nowPlayingRetryCount)/\(self.nowPlayingMaxRetries) in \(Int(delay))s")
+                let (retryCount, shouldRetry) = self.withStateLock {
+                    self.nowPlayingRetryCount += 1
+                    return (self.nowPlayingRetryCount, self.nowPlayingRetryCount <= self.nowPlayingMaxRetries)
+                }
+                if shouldRetry {
+                    let delay = Double(retryCount) * 5.0 // 5s, 10s, 15s
+                    self.log("Now-playing retry \(retryCount)/\(self.nowPlayingMaxRetries) in \(Int(delay))s")
                     Task.detached { [weak self] in
                         try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                         await MainActor.run {
