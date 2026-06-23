@@ -155,7 +155,7 @@ enum TimePeriod: String, CaseIterable, Identifiable {
     /// Maps to Last.fm API period parameter values.
     var lastfmPeriod: String {
         switch self {
-        case .day: return "7day"        // closest available
+        case .day: return "1day"
         case .week: return "7day"
         case .month: return "1month"
         case .threeMonths: return "3month"
