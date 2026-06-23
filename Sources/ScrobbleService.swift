@@ -56,7 +56,9 @@ class ScrobbleService {
     
     /// Step 1: Get a request token (no signature needed).
     func getRequestToken() async throws -> String {
-        let url = URL(string: "\(baseURL)?method=auth.getToken&api_key=\(apiKey)&format=json")!
+        guard let url = URL(string: "\(baseURL)?method=auth.getToken&api_key=\(apiKey)&format=json") else {
+            throw ScrobbleError.invalidURL
+        }
         let (data, _) = try await session.data(from: url)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         
@@ -86,7 +88,9 @@ class ScrobbleService {
         
         let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
             .joined(separator: "&")
-        let url = URL(string: "\(baseURL)?\(queryString)")!
+        guard let url = URL(string: "\(baseURL)?\(queryString)") else {
+            throw ScrobbleError.invalidURL
+        }
         let (data, _) = try await session.data(from: url)
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         
@@ -120,7 +124,7 @@ class ScrobbleService {
         let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
             .joined(separator: "&")
         
-        var request = URLRequest(url: URL(string: baseURL)!)
+        var request = URLRequest(url: try lastFMURL())
         request.httpMethod = "POST"
         request.httpBody = queryString.data(using: .utf8)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -163,7 +167,7 @@ class ScrobbleService {
         let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
             .joined(separator: "&")
         
-        var request = URLRequest(url: URL(string: baseURL)!)
+        var request = URLRequest(url: try lastFMURL())
         request.httpMethod = "POST"
         request.httpBody = queryString.data(using: .utf8)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -190,7 +194,7 @@ class ScrobbleService {
         let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
             .joined(separator: "&")
         
-        var request = URLRequest(url: URL(string: baseURL)!)
+        var request = URLRequest(url: try lastFMURL())
         request.httpMethod = "POST"
         request.httpBody = queryString.data(using: .utf8)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -219,7 +223,7 @@ class ScrobbleService {
         let queryString = params.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
             .joined(separator: "&")
         
-        var request = URLRequest(url: URL(string: baseURL)!)
+        var request = URLRequest(url: try lastFMURL())
         request.httpMethod = "POST"
         request.httpBody = queryString.data(using: .utf8)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
