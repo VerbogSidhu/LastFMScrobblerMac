@@ -28,7 +28,7 @@ class ScrobbleMonitor: ObservableObject {
     private let detector = MusicDetector()
     private var scrobbleService: ScrobbleService?
     private var pollTimer: Timer?
-    private let pollQueue = DispatchQueue(label: "com.verbog.lastfm.poll", qos: .utility)
+    private let pollQueue = DispatchQueue(label: "com.lastfmscrobbler.poll", qos: .utility)
     weak var statsManager: ScrobbleStatsManager?
     
     // Thread safety: protects all shared mutable state accessed from pollQueue
@@ -53,7 +53,9 @@ class ScrobbleMonitor: ObservableObject {
     // Now-playing refresh state
     private var lastNowPlayingTime: Date?
     private var nowPlayingRetryCount = 0
-    private let nowPlayingRefreshInterval: TimeInterval = 60 // refresh every 60s
+    private var nowPlayingRefreshInterval: TimeInterval {
+        UserDefaults.standard.double(forKey: "scrobble_nowplaying_refresh").clamped(to: 30...300, default: 60)
+    }
     private let nowPlayingMaxRetries = 3
     
     // Session key stored in UserDefaults
@@ -159,6 +161,17 @@ class ScrobbleMonitor: ObservableObject {
         log("Disconnected")
     }
     
+    func resetCredentials() {
+        UserDefaults.standard.removeObject(forKey: sessionKeyKey)
+        UserDefaults.standard.removeObject(forKey: apiSecretKey)
+        UserDefaults.standard.removeObject(forKey: apiKeyKey)
+        UserDefaults.standard.removeObject(forKey: "lastfm_setup_complete")
+        stopMonitoring()
+        scrobbleService = nil
+        authStatus = .notAuthenticated
+        log("Credentials reset — setup wizard will show on next launch")
+    }
+    
     // MARK: - Monitoring
     
     func startMonitoring() {
@@ -180,7 +193,8 @@ class ScrobbleMonitor: ObservableObject {
         
         // Create timer WITHOUT scheduledTimer (which adds to .default mode)
         // Then add to .common mode so it fires even during UI tracking/scrolling
-        let timer = Timer(timeInterval: 5.0, repeats: true) { [weak self] _ in
+        let pollInterval = UserDefaults.standard.double(forKey: "scrobble_poll_interval").clamped(to: 2...15, default: 5)
+        let timer = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
             self?.poll()
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -369,7 +383,8 @@ class ScrobbleMonitor: ObservableObject {
             }
             
             // Check scrobble conditions
-            if !hasScrobbled && isPlaying && effectiveDuration > 30 {
+            let minDuration = UserDefaults.standard.double(forKey: "scrobble_min_duration").clamped(to: 10...120, default: 30)
+            if !hasScrobbled && isPlaying && Double(effectiveDuration) > minDuration {
                 let threshold = min(Double(effectiveDuration) / 2.0, 240.0) // half or 4 min
                 
                 if accumulatedPlayTime >= threshold, let startTime = trackStartTime {
@@ -475,5 +490,14 @@ class ScrobbleMonitor: ObservableObject {
                 }
             }
         }
+    }
+}
+
+// MARK: - UserDefaults Helpers
+
+private extension Double {
+    func clamped(to range: ClosedRange<Double>, default defaultValue: Double) -> Double {
+        let stored = self
+        return stored >= range.lowerBound && stored <= range.upperBound ? stored : defaultValue
     }
 }

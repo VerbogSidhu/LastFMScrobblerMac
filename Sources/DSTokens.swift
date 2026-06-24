@@ -9,7 +9,19 @@ enum DS {
     // MARK: - Color Tokens
 
     enum Colors {
-        static let accent = Color.purple
+        static var accent: Color {
+            let name = UserDefaults.standard.string(forKey: "accent_color") ?? "purple"
+            switch name {
+            case "blue": return .blue
+            case "pink": return .pink
+            case "green": return .green
+            case "orange": return .orange
+            case "red": return .red
+            case "cyan": return .cyan
+            case "yellow": return .yellow
+            default: return .purple
+            }
+        }
         static let success = Color.green
         static let error = Color.red
         static let warning = Color.orange

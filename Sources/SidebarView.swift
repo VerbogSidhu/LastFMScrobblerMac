@@ -87,7 +87,7 @@ struct SidebarView: View {
         .frame(width: DS.Layout.sidebarWidth)
         .background(.ultraThinMaterial)
         .sheet(isPresented: $showSettings) {
-            SettingsView()
+            SettingsContainer()
                 .environmentObject(appState)
         }
     }
