@@ -53,14 +53,20 @@ class ScrobbleService {
     }
     
     /// Builds a POST URLRequest with form-encoded body from the given parameters.
+    /// Uses URLComponents for proper percent-encoding (spaces as +, special chars as %XX).
     private func buildPOSTRequest(url: URL, parameters: [String: String]) -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.httpBody = parameters
+        
+        // URLComponents properly encodes for application/x-www-form-urlencoded
+        var components = URLComponents()
+        components.queryItems = parameters
             .sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: "&")
+            .map { URLQueryItem(name: $0.key, value: $0.value) }
+        // queryItems uses + for spaces and %XX for special chars — correct for form encoding
+        request.httpBody = components.percentEncodedQuery?
             .data(using: .utf8)
+        
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         return request
     }
@@ -147,7 +153,7 @@ class ScrobbleService {
         } else if let error = json?["error"] as? Int {
             let message = json?["message"] as? String ?? "unknown"
             NSLog("[Scrobble] API error %d: %@", error, message)
-            throw ScrobbleError.apiError(error)
+            throw ScrobbleError.apiError(error, message)
         } else {
             NSLog("[Scrobble] Unexpected response: %@", "\(json ?? [:])")
         }
@@ -172,7 +178,7 @@ class ScrobbleService {
         let (_, response) = try await session.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard statusCode == 200 else {
-            throw ScrobbleError.apiError(statusCode)
+            throw ScrobbleError.apiError(statusCode, "HTTP status ")
         }
     }
     
@@ -193,12 +199,12 @@ class ScrobbleService {
         let (_, response) = try await session.data(for: request)
         let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard statusCode == 200 else {
-            throw ScrobbleError.apiError(statusCode)
+            throw ScrobbleError.apiError(statusCode, "HTTP status ")
         }
     }
     
-    /// Update now-playing status.
-    func updateNowPlaying(track: String, artist: String, album: String, duration: Int, sessionKey: String) async throws {
+    /// Update now-playing status. Returns (statusCode, responseBody) for debug logging.
+    func updateNowPlaying(track: String, artist: String, album: String, duration: Int, sessionKey: String) async throws -> (Int, String) {
         var params: [String: String] = [
             "method": "track.updateNowPlaying",
             "api_key": apiKey,
@@ -217,28 +223,29 @@ class ScrobbleService {
         let httpResponse = response as? HTTPURLResponse
         let statusCode = httpResponse?.statusCode ?? 0
         let jsonString = String(data: data, encoding: .utf8) ?? "NO BODY"
-        NSLog("[NowPlaying] HTTP %d — %@", statusCode, jsonString)
         
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         
         if let error = json?["error"] as? Int {
             let message = json?["message"] as? String ?? "unknown"
-            NSLog("[NowPlaying] API error %d: %@", error, message)
+            throw ScrobbleError.apiError(error, message)
         }
+        
+        return (statusCode, jsonString)
     }
 }
 
 enum ScrobbleError: LocalizedError {
     case noToken
     case noSession
-    case apiError(Int)
+    case apiError(Int, String)
     case invalidURL
     
     var errorDescription: String? {
         switch self {
         case .noToken: return "Failed to get request token from Last.fm"
         case .noSession: return "Failed to get session — did you authorize?"
-        case .apiError(let code): return "Last.fm API error: \(code)"
+        case .apiError(let code, let message): return "Last.fm API error \(code): \(message)"
         case .invalidURL: return "Invalid URL configuration"
         }
     }

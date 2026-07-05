@@ -114,7 +114,7 @@ enum DS {
     }
 
     // MARK: - Layout
-
+    
     enum Layout {
         static let sidebarWidth: CGFloat = 220
         static let cardImageSize: CGFloat = 100
@@ -122,5 +122,12 @@ enum DS {
         static let trackRowHeight: CGFloat = 48
         static let minWindowWidth: CGFloat = 900
         static let minWindowHeight: CGFloat = 600
+        
+        /// Shared 3-column grid layout for artist/album views.
+        static let gridColumns = [
+            GridItem(.flexible(), spacing: DS.Spacing.lg),
+            GridItem(.flexible(), spacing: DS.Spacing.lg),
+            GridItem(.flexible(), spacing: DS.Spacing.lg)
+        ]
     }
 }

@@ -5,6 +5,32 @@ class LastFMService {
     private let baseURL = "https://ws.audioscrobbler.com/2.0/"
     private let imageService = ArtistImageService.shared
     
+    // MARK: - In-Memory Cache
+    
+    /// Simple TTL-based cache for API responses to avoid redundant fetches.
+    private struct CacheEntry {
+        let data: Any
+        let timestamp: Date
+    }
+    
+    private var cache: [String: CacheEntry] = [:]
+    private let cacheTTL: TimeInterval = 60 // 60 seconds
+    
+    /// Returns cached value if still valid, nil otherwise.
+    private func cached<T>(_ key: String) -> T? {
+        guard let entry = cache[key],
+              Date().timeIntervalSince(entry.timestamp) < cacheTTL else {
+            cache.removeValue(forKey: key)
+            return nil
+        }
+        return entry.data as? T
+    }
+    
+    /// Stores value in cache with current timestamp.
+    private func setCache(_ key: String, value: Any) {
+        cache[key] = CacheEntry(data: value, timestamp: Date())
+    }
+    
     // MARK: - Safe URL Builder
     
     /// Builds a URL safely using URLComponents. Throws if the URL cannot be constructed.
@@ -40,6 +66,11 @@ class LastFMService {
     // MARK: - Recent Tracks
     
     func getRecentTracks(username: String, limit: Int, page: Int = 1) async throws -> (tracks: [RecentTrack], totalPages: Int, total: Int) {
+        let cacheKey = "recent_\(username)_\(limit)_\(page)"
+        if let cached: (tracks: [RecentTrack], totalPages: Int, total: Int) = cached(cacheKey) {
+            return cached
+        }
+        
         let url = try buildURL(method: "user.getrecenttracks", parameters: ["user": username, "limit": "\(limit)", "page": "\(page)"])
         let (data, _) = try await session.data(from: url)
         let response = try JSONDecoder().decode(RecentTracksResponse.self, from: data)
@@ -58,7 +89,9 @@ class LastFMService {
             )
         }
         
-        return (tracks, totalPages, total)
+        let result = (tracks, totalPages, total)
+        setCache(cacheKey, value: result)
+        return result
     }
     
     /// Fetch all recent tracks across multiple pages (up to maxPages).
@@ -80,6 +113,11 @@ class LastFMService {
     // MARK: - Top Artists
     
     func getTopArtists(username: String, limit: Int, period: String = "overall") async throws -> [TopArtist] {
+        let cacheKey = "artists_\(username)_\(limit)_\(period)"
+        if let cached: [TopArtist] = cached(cacheKey) {
+            return cached
+        }
+        
         let url = try buildURL(method: "user.gettopartists", parameters: ["user": username, "limit": "\(limit)", "period": period])
         let (data, _) = try await session.data(from: url)
         let response = try JSONDecoder().decode(TopArtistsResponse.self, from: data)
@@ -111,6 +149,7 @@ class LastFMService {
             }
         }
         
+        setCache(cacheKey, value: artists)
         return artists
     }
     

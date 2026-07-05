@@ -14,6 +14,10 @@ class DiskImageCache {
     /// Max cache size in bytes (50 MB). Evicts oldest files when exceeded.
     private let maxCacheBytes: Int = 50 * 1024 * 1024
     
+    /// Only run trim every N calls to avoid excessive I/O.
+    private var callCount = 0
+    private let trimInterval = 20
+    
     private init() {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         cacheDir = appSupport.appendingPathComponent("LastFM/ImageCache", isDirectory: true)
@@ -60,8 +64,12 @@ class DiskImageCache {
                 inMemoryLookup[key] = fileURL
             }
             
-            // Evict old files if cache is too large
-            trimCacheIfNeeded()
+            // Only trim cache every N calls to avoid excessive I/O
+            callCount += 1
+            if callCount >= trimInterval {
+                callCount = 0
+                trimCacheIfNeeded()
+            }
             
             return fileURL
         } catch {

@@ -73,6 +73,22 @@ class ScrobbleMonitor: ObservableObject {
         let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
         let entry = "[\(timestamp)] \(message)"
         NSLog("[ScrobbleMonitor] %@", message)
+        // Write to file for debugging (NSLog doesn't surface in log show on macOS 26)
+        if let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let logURL = dir.appendingPathComponent("LastFM/monitor_debug.log")
+            let line = "\(entry)\n"
+            if let data = line.data(using: .utf8) {
+                if FileManager.default.fileExists(atPath: logURL.path) {
+                    if let fh = FileHandle(forWritingAtPath: logURL.path) {
+                        fh.seekToEndOfFile()
+                        fh.write(data)
+                        fh.closeFile()
+                    }
+                } else {
+                    try? data.write(to: logURL)
+                }
+            }
+        }
         DispatchQueue.main.async {
             self.debugLog.insert(entry, at: 0)
             if self.debugLog.count > 50 {
@@ -312,11 +328,13 @@ class ScrobbleMonitor: ObservableObject {
             
             // Track changed
             if trackID != currentTrackID {
-                self.log("New track: \(trackInfo.name) — \(trackInfo.artist) [ID:\(trackID), dur:\(effectiveDuration)s, state:\(trackInfo.playerState)]")
+                self.log("New track: \(trackInfo.name) — \(trackInfo.artist) [ID:\(trackID), dur:\(effectiveDuration)s, pos:\(trackInfo.playerPosition)s, state:\(trackInfo.playerState)]")
                 currentTrackID = trackID
                 trackStartTime = Date()
                 hasScrobbled = false
-                accumulatedPlayTime = 0
+                // Initialize accumulated play time to current position so we don't
+                // miss scrobbles when a track is detected partway through
+                accumulatedPlayTime = Double(trackInfo.playerPosition)
                 lastPollTime = Date()
                 wasPlaying = isPlaying
                 lastPlayerPosition = trackInfo.playerPosition
@@ -384,54 +402,59 @@ class ScrobbleMonitor: ObservableObject {
             
             // Check scrobble conditions
             let minDuration = UserDefaults.standard.double(forKey: "scrobble_min_duration").clamped(to: 10...120, default: 30)
-            if !hasScrobbled && isPlaying && Double(effectiveDuration) > minDuration {
-                let threshold = min(Double(effectiveDuration) / 2.0, 240.0) // half or 4 min
-                
-                if accumulatedPlayTime >= threshold, let startTime = trackStartTime {
-                    hasScrobbled = true
-                    let timestamp = Int(startTime.timeIntervalSince1970)
+            if !hasScrobbled && isPlaying {
+                if Double(effectiveDuration) <= minDuration {
+                    // Log why this track won't scrobble
+                    self.log("Scrobble skipped: \(trackInfo.name) duration \(effectiveDuration)s <= minDuration \(Int(minDuration))s")
+                } else {
+                    let threshold = min(Double(effectiveDuration) / 2.0, 240.0) // half or 4 min
                     
-                    self.log("Scrobble triggered! \(trackInfo.name) — \(trackInfo.artist) (played \(Int(accumulatedPlayTime))s of \(trackInfo.duration)s, threshold: \(Int(threshold))s)")
-                    
-                    Task {
-                        do {
-                            try await service.scrobble(
-                                track: trackInfo.name,
-                                artist: trackInfo.artist,
-                                album: trackInfo.album,
-                                duration: effectiveDuration,
-                                timestamp: timestamp,
-                                sessionKey: sessionKey
-                            )
-                            self.log("SCROBBLE ACCEPTED: \(trackInfo.name) — \(trackInfo.artist)")
-                            self.statsManager?.recordScrobble(track: trackInfo.name, artist: trackInfo.artist, album: trackInfo.album)
+                    if accumulatedPlayTime >= threshold, let startTime = trackStartTime {
+                        hasScrobbled = true
+                        let timestamp = Int(startTime.timeIntervalSince1970)
                         
-                            // Notify observers (AppState) to refresh UI
-                            NotificationCenter.default.post(name: .scrobbleDidComplete, object: nil)
-                            await MainActor.run {
-                                self.lastScrobbledTrack = "\(trackInfo.name) — \(trackInfo.artist)"
-                                self.scrobbleLog.insert(
-                                    ScrobbleLogEntry(
-                                        track: trackInfo.name,
-                                        artist: trackInfo.artist,
-                                        timestamp: Date()
-                                    ),
-                                    at: 0
+                        self.log("Scrobble triggered! \(trackInfo.name) — \(trackInfo.artist) (played \(Int(accumulatedPlayTime))s of \(effectiveDuration)s, threshold: \(Int(threshold))s)")
+                        
+                        Task {
+                            do {
+                                try await service.scrobble(
+                                    track: trackInfo.name,
+                                    artist: trackInfo.artist,
+                                    album: trackInfo.album,
+                                    duration: effectiveDuration,
+                                    timestamp: timestamp,
+                                    sessionKey: sessionKey
                                 )
-                                // Keep log to last 20 entries
-                                if self.scrobbleLog.count > 20 {
-                                    self.scrobbleLog = Array(self.scrobbleLog.prefix(20))
+                                self.log("SCROBBLE ACCEPTED: \(trackInfo.name) — \(trackInfo.artist)")
+                                self.statsManager?.recordScrobble(track: trackInfo.name, artist: trackInfo.artist, album: trackInfo.album)
+                            
+                                // Notify observers (AppState) to refresh UI
+                                NotificationCenter.default.post(name: .scrobbleDidComplete, object: nil)
+                                await MainActor.run {
+                                    self.lastScrobbledTrack = "\(trackInfo.name) — \(trackInfo.artist)"
+                                    self.scrobbleLog.insert(
+                                        ScrobbleLogEntry(
+                                            track: trackInfo.name,
+                                            artist: trackInfo.artist,
+                                            timestamp: Date()
+                                        ),
+                                        at: 0
+                                    )
+                                    // Keep log to last 20 entries
+                                    if self.scrobbleLog.count > 20 {
+                                        self.scrobbleLog = Array(self.scrobbleLog.prefix(20))
+                                    }
                                 }
+                            } catch {
+                                self.log("SCROBBLE FAILED: \(error)")
                             }
-                        } catch {
-                            self.log("SCROBBLE FAILED: \(error)")
                         }
-                    }
-                } else if isPlaying {
-                    // Log progress periodically
-                    let remaining = Int(threshold - accumulatedPlayTime)
-                    if remaining > 0 && remaining % 30 < 5 {
-                        self.log("Play time: \(Int(accumulatedPlayTime))s / \(Int(threshold))s threshold — \(remaining)s to scrobble")
+                    } else if isPlaying {
+                        // Log progress periodically
+                        let remaining = Int(threshold - accumulatedPlayTime)
+                        if remaining > 0 && remaining % 30 < 5 {
+                            self.log("Play time: \(Int(accumulatedPlayTime))s / \(Int(threshold))s threshold — \(remaining)s to scrobble")
+                        }
                     }
                 }
             }
@@ -441,15 +464,52 @@ class ScrobbleMonitor: ObservableObject {
     // MARK: - Now-Playing Helper
     
     /// Force a now-playing update right now (called by refresh button).
+    /// Runs AppleScript off the main thread and retries once on failure,
+    /// falling back to cached track info if AppleScript fails entirely.
     func forceNowPlayingUpdate() {
         guard authStatus == .authenticated, let sessionKey = sessionKey else { return }
-        guard let info = detector.getCurrentTrack(), info.playerState == "playing" else { return }
         
-        let effectiveDuration = withStateLock {
-            info.duration > 0 ? info.duration : (durationCache[info.databaseID] ?? 0)
-        }
         log("Manual now-playing refresh triggered")
-        sendNowPlaying(trackInfo: info, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
+        
+        pollQueue.async { [weak self] in
+            guard let self = self else { return }
+            
+            // Try AppleScript first
+            let info = self.detector.getCurrentTrack()
+            
+            if let trackInfo = info, trackInfo.playerState == "playing" {
+                let effectiveDuration = self.withStateLock {
+                    trackInfo.duration > 0 ? trackInfo.duration : (self.durationCache[trackInfo.databaseID] ?? 0)
+                }
+                self.sendNowPlaying(trackInfo: trackInfo, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
+                return
+            }
+            
+            // AppleScript failed or returned non-playing state — fall back to cached track info
+            let (cachedName, cachedArtist) = self.withStateLock {
+                // Use whatever the poll loop last saw
+                (self.currentTrackName, self.currentArtist)
+            }
+            
+            guard let name = cachedName, let artist = cachedArtist else {
+                self.log("forceNowPlaying: no cached track to send")
+                return
+            }
+            
+            self.log("forceNowPlaying: AppleScript unavailable, using cached track: \(name) — \(artist)")
+            
+            // Build a minimal MusicTrackInfo from cached state
+            let fallbackInfo = MusicTrackInfo(
+                name: name,
+                artist: artist,
+                album: "",
+                duration: 0,
+                playerPosition: 0,
+                playerState: "playing",
+                databaseID: 0
+            )
+            self.sendNowPlaying(trackInfo: fallbackInfo, effectiveDuration: 0, sessionKey: sessionKey, isRetry: false)
+        }
     }
     
     private func sendNowPlaying(trackInfo: MusicTrackInfo, effectiveDuration: Int, sessionKey: String, isRetry: Bool) {
@@ -457,14 +517,14 @@ class ScrobbleMonitor: ObservableObject {
         
         Task {
             do {
-                try await service.updateNowPlaying(
+                let (statusCode, body) = try await service.updateNowPlaying(
                     track: trackInfo.name,
                     artist: trackInfo.artist,
                     album: trackInfo.album,
                     duration: effectiveDuration,
                     sessionKey: sessionKey
                 )
-                self.log("Now-playing sent: \(trackInfo.name)")
+                self.log("Now-playing sent: \(trackInfo.name) [HTTP \(statusCode)] \(body.prefix(200))")
                 self.withStateLock {
                     self.lastNowPlayingTime = Date()
                     self.nowPlayingRetryCount = 0

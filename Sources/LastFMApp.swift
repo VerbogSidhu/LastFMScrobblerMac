@@ -64,6 +64,7 @@ class AppState: ObservableObject {
     private var loadedTabs: Set<SidebarTab> = []
     private var refreshTimer: Timer?
     private var lastScrobbledTrack: String?
+    private var lastMenuBarStatsFetch: Date = .distantPast
     
     init() {
         scrobbleMonitor.statsManager = statsManager
@@ -95,20 +96,27 @@ class AppState: ObservableObject {
     }
     
     /// Lightweight refresh — only updates recent tracks and menu bar stats.
+    /// Menu bar stats are throttled to every 5 minutes to reduce API calls.
     private func refreshAfterScrobble() {
         Task {
             do {
                 let (tracks, _, _) = try await service.getRecentTracks(username: Constants.lastFMUsername, limit: 20)
                 self.recentTracks = tracks
                 
-                // Also refresh menu bar stats from API
-                async let todayCount = service.getScrobbleCount(username: Constants.lastFMUsername, period: "7day")
-                async let weekCount = service.getScrobbleCount(username: Constants.lastFMUsername, period: "1month")
-                async let monthCount = service.getScrobbleCount(username: Constants.lastFMUsername, period: "3month")
-                
-                self.menuBarTodayCount = try await todayCount
-                self.menuBarWeekCount = try await weekCount
-                self.menuBarMonthCount = try await monthCount
+                // Only refresh menu bar stats every 5 minutes
+                let now = Date()
+                if now.timeIntervalSince(lastMenuBarStatsFetch) >= 300 {
+                    lastMenuBarStatsFetch = now
+                    
+                    // Also refresh menu bar stats from API
+                    async let todayCount = service.getScrobbleCount(username: Constants.lastFMUsername, period: "7day")
+                    async let weekCount = service.getScrobbleCount(username: Constants.lastFMUsername, period: "1month")
+                    async let monthCount = service.getScrobbleCount(username: Constants.lastFMUsername, period: "3month")
+                    
+                    self.menuBarTodayCount = try await todayCount
+                    self.menuBarWeekCount = try await weekCount
+                    self.menuBarMonthCount = try await monthCount
+                }
             } catch {
                 // Silent fail for background refresh
             }

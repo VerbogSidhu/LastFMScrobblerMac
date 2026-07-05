@@ -64,14 +64,53 @@ actor ArtistImageService {
     }
     
     /// Batch-fetch artist images. Returns a dictionary of artist name -> image URL.
+    /// Fetches in parallel for speed, with a concurrency limit to avoid overwhelming Deezer.
     func fetchArtistImages(for artistNames: [String]) async -> [String: String] {
-        // Fetch sequentially to avoid actor reentrancy issues
+        // Filter out already-cached names
+        let uncached = artistNames.filter { cache[$0] == nil }
+        
+        // Fetch uncached images in parallel (max 5 concurrent)
         var results: [String: String] = [:]
+        
+        // First, add cached results
         for name in artistNames {
-            if let image = await fetchArtistImage(for: name) {
-                results[name] = image
+            if let cached = cache[name] {
+                results[name] = cached
             }
         }
+        
+        // Then fetch uncached in parallel with bounded concurrency
+        await withTaskGroup(of: (String, String?).self) { group in
+            var activeTasks = 0
+            var index = 0
+            
+            for name in uncached {
+                // Limit concurrent requests to 5
+                if activeTasks >= 5 {
+                    if let (fetchedName, fetchedURL) = await group.next() {
+                        if let url = fetchedURL {
+                            results[fetchedName] = url
+                        }
+                        activeTasks -= 1
+                    }
+                }
+                
+                group.addTask { [self] in
+                    let image = await self.fetchArtistImage(for: name)
+                    return (name, image)
+                }
+                activeTasks += 1
+                index += 1
+            }
+            
+            // Wait for remaining tasks
+            for await (fetchedName, fetchedURL) in group {
+                if let url = fetchedURL {
+                    results[fetchedName] = url
+                }
+            }
+        }
+        
         return results
     }
     

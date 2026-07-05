@@ -116,14 +116,10 @@ struct RecentTracksView: View {
 
 struct TopArtistsView: View {
     @EnvironmentObject var appState: AppState
-
+    
     var body: some View {
         if appState.isLoading {
-            LazyVGrid(columns: [
-                GridItem(.flexible(), spacing: DS.Spacing.lg),
-                GridItem(.flexible(), spacing: DS.Spacing.lg),
-                GridItem(.flexible(), spacing: DS.Spacing.lg)
-            ], spacing: DS.Spacing.lg) {
+            LazyVGrid(columns: DS.Layout.gridColumns, spacing: DS.Spacing.lg) {
                 ForEach(0..<6, id: \.self) { _ in
                     SkeletonGridCard()
                 }
@@ -137,11 +133,7 @@ struct TopArtistsView: View {
                 subtitle: "Your top artists will appear here once you start scrobbling."
             )
         } else {
-            LazyVGrid(columns: [
-                GridItem(.flexible(), spacing: DS.Spacing.lg),
-                GridItem(.flexible(), spacing: DS.Spacing.lg),
-                GridItem(.flexible(), spacing: DS.Spacing.lg)
-            ], spacing: DS.Spacing.lg) {
+            LazyVGrid(columns: DS.Layout.gridColumns, spacing: DS.Spacing.lg) {
                 ForEach(appState.topArtists) { artist in
                     ArtistCard(artist: artist)
                 }
@@ -156,14 +148,10 @@ struct TopArtistsView: View {
 
 struct TopAlbumsView: View {
     @EnvironmentObject var appState: AppState
-
+    
     var body: some View {
         if appState.isLoading {
-            LazyVGrid(columns: [
-                GridItem(.flexible(), spacing: DS.Spacing.lg),
-                GridItem(.flexible(), spacing: DS.Spacing.lg),
-                GridItem(.flexible(), spacing: DS.Spacing.lg)
-            ], spacing: DS.Spacing.lg) {
+            LazyVGrid(columns: DS.Layout.gridColumns, spacing: DS.Spacing.lg) {
                 ForEach(0..<6, id: \.self) { _ in
                     SkeletonGridCard()
                 }
@@ -177,11 +165,7 @@ struct TopAlbumsView: View {
                 subtitle: "Your top albums will appear here once you start scrobbling."
             )
         } else {
-            LazyVGrid(columns: [
-                GridItem(.flexible(), spacing: DS.Spacing.lg),
-                GridItem(.flexible(), spacing: DS.Spacing.lg),
-                GridItem(.flexible(), spacing: DS.Spacing.lg)
-            ], spacing: DS.Spacing.lg) {
+            LazyVGrid(columns: DS.Layout.gridColumns, spacing: DS.Spacing.lg) {
                 ForEach(appState.topAlbums) { album in
                     AlbumCard(album: album)
                 }
