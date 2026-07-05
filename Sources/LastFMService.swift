@@ -210,15 +210,15 @@ class LastFMService {
     // MARK: - Scrobble Counts (for menu bar stats)
     
     /// Get exact scrobble count for a specific period.
-    /// Uses user.getrecenttracks with limit=1 and reads the total from response metadata.
+    /// Uses user.gettopartists (which supports period) and reads total from response metadata.
     func getScrobbleCount(username: String, period: String) async throws -> Int {
-        let url = try buildURL(method: "user.getrecenttracks", parameters: [
+        let url = try buildURL(method: "user.gettopartists", parameters: [
             "user": username,
             "limit": "1",
             "period": period
         ])
         let (data, _) = try await session.data(from: url)
-        let response = try JSONDecoder().decode(RecentTracksResponse.self, from: data)
-        return Int(response.recenttracks.attr?.total ?? "0") ?? 0
+        let response = try JSONDecoder().decode(TopArtistsResponse.self, from: data)
+        return Int(response.topartists.attr?.total ?? "0") ?? 0
     }
 }
