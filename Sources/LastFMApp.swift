@@ -63,6 +63,7 @@ class AppState: ObservableObject {
     /// Tracks which tabs have already loaded to avoid redundant fetches.
     private var loadedTabs: Set<SidebarTab> = []
     private var refreshTimer: Timer?
+    private var scrobbleObserver: NSObjectProtocol?
     private var lastScrobbledTrack: String?
     private var lastMenuBarStatsFetch: Date = .distantPast
     
@@ -73,6 +74,9 @@ class AppState: ObservableObject {
     
     deinit {
         refreshTimer?.invalidate()
+        if let observer = scrobbleObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
     
     /// Auto-refresh data every 30 seconds and immediately after scrobbles.
@@ -84,7 +88,7 @@ class AppState: ObservableObject {
         }
         
         // Observe scrobble events for immediate refresh
-        NotificationCenter.default.addObserver(
+        scrobbleObserver = NotificationCenter.default.addObserver(
             forName: .scrobbleDidComplete,
             object: nil,
             queue: .main
