@@ -52,6 +52,10 @@ class ScrobbleMonitor: ObservableObject {
     
     // Now-playing refresh state
     private var lastNowPlayingTime: Date?
+    // Tracks the last now-playing ATTEMPT (success OR failure). The periodic
+    // refresh is gated on this so a track whose initial updateNowPlaying call
+    // fails is still retried periodically instead of being stranded forever.
+    private var lastNowPlayingAttempt: Date?
     private var nowPlayingRetryCount = 0
     private var nowPlayingRefreshInterval: TimeInterval {
         UserDefaults.standard.double(forKey: "scrobble_nowplaying_refresh").clamped(to: 30...300, default: 60)
@@ -233,6 +237,7 @@ class ScrobbleMonitor: ObservableObject {
             durationCache = [:]
             lastPlayerPosition = 0
             lastNowPlayingTime = nil
+            lastNowPlayingAttempt = nil
             nowPlayingRetryCount = 0
         }
         currentTrackName = nil
@@ -263,11 +268,11 @@ class ScrobbleMonitor: ObservableObject {
             // Snapshot shared state under lock for safe access on pollQueue
             var (currentTrackID, trackStartTime, hasScrobbled, accumulatedPlayTime,
                  lastPollTime, wasPlaying, lastPlayerPosition, lastNowPlayingTime,
-                 nowPlayingRetryCount, durationCache) = self.withStateLock {
+                 lastNowPlayingAttempt, nowPlayingRetryCount, durationCache) = self.withStateLock {
                 (self.currentTrackID, self.trackStartTime, self.hasScrobbled,
                  self.accumulatedPlayTime, self.lastPollTime, self.wasPlaying,
                  self.lastPlayerPosition, self.lastNowPlayingTime,
-                 self.nowPlayingRetryCount, self.durationCache)
+                 self.lastNowPlayingAttempt, self.nowPlayingRetryCount, self.durationCache)
             }
             
             // Write back shared state to self on exit (including early returns)
@@ -281,6 +286,7 @@ class ScrobbleMonitor: ObservableObject {
                     self.wasPlaying = wasPlaying
                     self.lastPlayerPosition = lastPlayerPosition
                     self.lastNowPlayingTime = lastNowPlayingTime
+                    self.lastNowPlayingAttempt = lastNowPlayingAttempt
                     self.nowPlayingRetryCount = nowPlayingRetryCount
                     self.durationCache = durationCache
                 }
@@ -339,6 +345,7 @@ class ScrobbleMonitor: ObservableObject {
                 wasPlaying = isPlaying
                 lastPlayerPosition = trackInfo.playerPosition
                 lastNowPlayingTime = nil  // reset refresh timer
+                lastNowPlayingAttempt = Date()  // mark initial attempt
                 nowPlayingRetryCount = 0
                 
                 // Send now-playing update
@@ -361,6 +368,7 @@ class ScrobbleMonitor: ObservableObject {
                         
                         // Send now-playing update for the new loop iteration
                         lastNowPlayingTime = nil
+                        lastNowPlayingAttempt = Date()
                         nowPlayingRetryCount = 0
                         self.sendNowPlaying(trackInfo: trackInfo, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
                         
@@ -387,10 +395,14 @@ class ScrobbleMonitor: ObservableObject {
                 lastPlayerPosition = trackInfo.playerPosition
                 wasPlaying = true
                 
-                // Periodic now-playing refresh — keeps Last.fm status alive
-                if let lastNP = lastNowPlayingTime,
-                   now.timeIntervalSince(lastNP) >= self.nowPlayingRefreshInterval {
-                    self.log("Periodic now-playing refresh (every \(Int(self.nowPlayingRefreshInterval))s)")
+                // Periodic now-playing refresh — keeps Last.fm status alive.
+                // Gated on the last ATTEMPT (not last success) + a fresh retry
+                // budget, so a track whose initial call failed is still retried
+                // periodically rather than being stranded with no now-playing.
+                if now.timeIntervalSince(lastNowPlayingAttempt ?? .distantPast) >= self.nowPlayingRefreshInterval {
+                    self.log("Periodic now-playing refresh (makes a new attempt after \(Int(self.nowPlayingRefreshInterval))s)")
+                    lastNowPlayingAttempt = now  // start a fresh cycle
+                    nowPlayingRetryCount = 0
                     self.sendNowPlaying(trackInfo: trackInfo, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
                 }
             } else if wasPlaying && !isPlaying {
