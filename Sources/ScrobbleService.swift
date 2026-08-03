@@ -53,23 +53,29 @@ class ScrobbleService {
     }
     
     /// Builds a POST URLRequest with form-encoded body from the given parameters.
-    /// Uses URLComponents for proper percent-encoding (spaces as +, special chars as %XX).
-    private func buildPOSTRequest(url: URL, parameters: [String: String]) -> URLRequest {
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
+        /// Uses URLComponents for proper percent-encoding (spaces as %20, special chars as %XX).
+        private func buildPOSTRequest(url: URL, parameters: [String: String]) -> URLRequest {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
         
-        // URLComponents properly encodes for application/x-www-form-urlencoded
-        var components = URLComponents()
-        components.queryItems = parameters
-            .sorted { $0.key < $1.key }
-            .map { URLQueryItem(name: $0.key, value: $0.value) }
-        // queryItems uses + for spaces and %XX for special chars — correct for form encoding
-        request.httpBody = components.percentEncodedQuery?
-            .data(using: .utf8)
+            // URLComponents properly encodes for application/x-www-form-urlencoded
+            var components = URLComponents()
+            components.queryItems = parameters
+                .sorted { $0.key < $1.key }
+                .map { URLQueryItem(name: $0.key, value: $0.value) }
+            // Use the percent-encoded query as the body, but escape literal '+' signs.
+            // URLComponents leaves a real '+' in a value unescaped, yet Last.fm form-decodes
+            // '+' as a space — which would make the server recompute a DIFFERENT api_sig
+            // than the one we signed over the raw value, triggering error 13
+            // ("Invalid method signature"). Escaping '+' as %2B keeps the round-trip exact
+            // (URLComponents already encodes actual spaces as %20, not '+').
+            var encoded = components.percentEncodedQuery ?? ""
+            encoded = encoded.replacingOccurrences(of: "+", with: "%2B")
+            request.httpBody = encoded.data(using: .utf8)
         
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        return request
-    }
+            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+            return request
+        }
     
     // MARK: - Authentication
     
