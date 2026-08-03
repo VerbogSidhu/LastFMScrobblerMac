@@ -328,6 +328,14 @@ class ScrobbleMonitor: ObservableObject {
             // Cache duration if non-zero
             if trackInfo.duration > 0 {
                 durationCache[trackID] = trackInfo.duration
+                // Bound the cache to most recent entries (prevents unbounded
+                // growth over long sessions of unique tracks).
+                if durationCache.count > 200 {
+                    let trimmed = durationCache
+                        .sorted { $0.key > $1.key }   // largest IDs = most recent
+                        .prefix(200)
+                    durationCache = Dictionary(uniqueKeysWithValues: Array(trimmed))
+                }
             }
             // Use cached duration if current is 0
             let effectiveDuration = trackInfo.duration > 0 ? trackInfo.duration : (durationCache[trackID] ?? 0)

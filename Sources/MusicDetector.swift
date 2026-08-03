@@ -13,9 +13,9 @@ struct MusicTrackInfo {
 
 class MusicDetector {
     
-    /// Check if Apple Music is running and get current track info.
-    func getCurrentTrack() -> MusicTrackInfo? {
-        let script = """
+    // NSAppleScript(source:) compiles the script — reuse the compiled instance
+    // instead of recompiling on every poll (called every 5s while monitoring).
+    private let currentTrackScript = NSAppleScript(source: """
         tell application "System Events"
             if not (exists process "Music") then
                 return "NOT_RUNNING"
@@ -42,10 +42,19 @@ class MusicDetector {
                 return "ERROR"
             end try
         end tell
-        """
+        """)
+    
+    private let installedScript = NSAppleScript(source: """
+        tell application "System Events"
+            return (exists process "Music")
+        end tell
+        """)
+    
+    /// Check if Apple Music is running and get current track info.
+    func getCurrentTrack() -> MusicTrackInfo? {
+        guard let scriptObject = currentTrackScript else { return nil }
         
         var error: NSDictionary?
-        guard let scriptObject = NSAppleScript(source: script) else { return nil }
         let result = scriptObject.executeAndReturnError(&error)
         
         if let error = error {
@@ -77,13 +86,8 @@ class MusicDetector {
     
     /// Check if Apple Music is installed on this Mac.
     func isAppleMusicInstalled() -> Bool {
-        let script = """
-        tell application "System Events"
-            return (exists process "Music")
-        end tell
-        """
+        guard let scriptObject = installedScript else { return false }
         var error: NSDictionary?
-        guard let scriptObject = NSAppleScript(source: script) else { return false }
         let result = scriptObject.executeAndReturnError(&error)
         return result.booleanValue
     }

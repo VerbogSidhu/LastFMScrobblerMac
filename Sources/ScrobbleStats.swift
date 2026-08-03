@@ -50,7 +50,31 @@ class ScrobbleStatsManager: ObservableObject {
         }
         
         save()
-        refreshCounts()
+        // refreshCounts() updates @Published properties which SwiftUI observes —
+        // dispatch to main so UI updates happen on the main thread (this method
+        // is called from a background monitoring task).
+        let counts = currentCounts()
+        DispatchQueue.main.async {
+            self.todayCount = counts.today
+            self.weekCount = counts.week
+            self.monthCount = counts.month
+            self.totalCount = counts.total
+        }
+    }
+
+    private func currentCounts() -> (today: Int, week: Int, month: Int, total: Int) {
+        let now = Date()
+        let calendar = Calendar.current
+        let startOfDay = calendar.startOfDay(for: now)
+        let startOfWeek = calendar.date(byAdding: .day, value: -7, to: startOfDay)!
+        let startOfMonth = calendar.date(byAdding: .month, value: -1, to: startOfDay)!
+        
+        return (
+            records.filter { $0.timestamp >= startOfDay }.count,
+            records.filter { $0.timestamp >= startOfWeek }.count,
+            records.filter { $0.timestamp >= startOfMonth }.count,
+            records.count
+        )
     }
     
     // MARK: - Querying
