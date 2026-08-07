@@ -362,8 +362,8 @@ class ScrobbleMonitor: ObservableObject {
             }
             
             // Track same, accumulate play time
+            let now = Date()
             if isPlaying {
-                let now = Date()
                 
                 // Detect loop via player position reset:
                 // Position dropped from near end (>60% of duration) to near start (<30%)
@@ -396,7 +396,13 @@ class ScrobbleMonitor: ObservableObject {
                     trackStartTime = now
                 }
                 
-                if let last = lastPollTime {
+                // Only accumulate play time between two *consecutive playing*
+                // polls. While paused, lastPollTime is refreshed every poll, so
+                // the resume poll must not add the entire pause duration to
+                // accumulatedPlayTime — that would falsely push the total past
+                // the track duration, trigger the fallback loop reset below,
+                // and cause a second scrobble for the same play.
+                if wasPlaying, let last = lastPollTime {
                     accumulatedPlayTime += now.timeIntervalSince(last)
                 }
                 lastPollTime = now
@@ -413,10 +419,14 @@ class ScrobbleMonitor: ObservableObject {
                     nowPlayingRetryCount = 0
                     self.sendNowPlaying(trackInfo: trackInfo, effectiveDuration: effectiveDuration, sessionKey: sessionKey, isRetry: false)
                 }
-            } else if wasPlaying && !isPlaying {
-                // Just paused
-                self.log("Track paused — accumulated \(Int(accumulatedPlayTime))s so far")
-                lastPollTime = Date()
+            } else {
+                // Paused (or stopped): keep lastPollTime fresh on every poll so
+                // a later resume doesn't accumulate the pause duration as play
+                // time. Only log the transition playing -> paused once.
+                lastPollTime = now
+                if wasPlaying {
+                    self.log("Track paused — accumulated \(Int(accumulatedPlayTime))s so far")
+                }
                 wasPlaying = false
             }
             
