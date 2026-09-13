@@ -1,0 +1,329 @@
+import Foundation
+
+class LastFMService {
+    private let apiKey = "b5940532a8c9dfde75381c3060972a65"
+    private let baseURL = "https://ws.audioscrobbler.com/2.0/"
+    private let imageService = ArtistImageService.shared
+    
+    // MARK: - In-Memory Cache
+    
+    /// Simple TTL-based cache for API responses to avoid redundant fetches.
+    private struct CacheEntry {
+        let data: Any
+        let timestamp: Date
+    }
+    
+    private var cache: [String: CacheEntry] = [:]
+    private let cacheTTL: TimeInterval = 60 // 60 seconds
+    
+    /// Returns cached value if still valid, nil otherwise.
+    private func cached<T>(_ key: String) -> T? {
+        guard let entry = cache[key],
+              Date().timeIntervalSince(entry.timestamp) < cacheTTL else {
+            cache.removeValue(forKey: key)
+            return nil
+        }
+        return entry.data as? T
+    }
+    
+    /// Stores value in cache with current timestamp.
+    private func setCache(_ key: String, value: Any) {
+        cache[key] = CacheEntry(data: value, timestamp: Date())
+    }
+    
+    // MARK: - Safe URL Builder
+    
+    /// Builds a URL safely using URLComponents. Throws if the URL cannot be constructed.
+    private func buildURL(method: String, parameters: [String: String]) throws -> URL {
+        var components = URLComponents(string: baseURL)!
+        components.queryItems = [
+            URLQueryItem(name: "method", value: method),
+            URLQueryItem(name: "api_key", value: apiKey),
+            URLQueryItem(name: "format", value: "json")
+        ] + parameters.map { URLQueryItem(name: $0.key, value: $0.value) }
+        
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+        return url
+    }
+    
+    /// URLSession with in-memory + disk caching (5 min memory, 30 min disk).
+    /// Avoids re-fetching the same data when switching tabs.
+    private let session: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.urlCache = URLCache(
+            memoryCapacity: 1 * 1024 * 1024,   // 1 MB memory
+            diskCapacity: 5 * 1024 * 1024,      // 5 MB disk
+            diskPath: "LastFMAPICache"
+        )
+        config.requestCachePolicy = .reloadRevalidatingCacheData
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 30
+        return URLSession(configuration: config)
+    }()
+    
+    // MARK: - Recent Tracks
+    
+    func getRecentTracks(username: String, limit: Int, page: Int = 1) async throws -> (tracks: [RecentTrack], totalPages: Int, total: Int) {
+        let cacheKey = "recent_\(username)_\(limit)_\(page)"
+        if let cached: (tracks: [RecentTrack], totalPages: Int, total: Int) = cached(cacheKey) {
+            return cached
+        }
+        
+        let url = try buildURL(method: "user.getrecenttracks", parameters: ["user": username, "limit": "\(limit)", "page": "\(page)"])
+        let (data, _) = try await session.data(from: url)
+        let response = try JSONDecoder().decode(RecentTracksResponse.self, from: data)
+        
+        let totalPages = Int(response.recenttracks.attr?.totalPages ?? "1") ?? 1
+        let total = Int(response.recenttracks.attr?.total ?? "0") ?? 0
+        
+        let tracks = response.recenttracks.track.map { track in
+            RecentTrack(
+                name: track.name,
+                artist: track.artist.text,
+                album: track.album.text,
+                imageURL: track.image.last?.text,
+                date: track.date?.uts,
+                nowPlaying: track.attr?.nowplaying != nil
+            )
+        }
+        
+        let result = (tracks, totalPages, total)
+        setCache(cacheKey, value: result)
+        return result
+    }
+    
+    /// Fetch all recent tracks across multiple pages (up to maxPages).
+    func getAllRecentTracks(username: String, maxPages: Int = 20) async throws -> [RecentTrack] {
+        var allTracks: [RecentTrack] = []
+        var page = 1
+        var totalPages = 1
+        
+        while page <= maxPages && page <= totalPages {
+            let result = try await getRecentTracks(username: username, limit: 50, page: page)
+            allTracks.append(contentsOf: result.tracks)
+            totalPages = result.totalPages
+            page += 1
+        }
+        
+        return allTracks
+    }
+    
+    // MARK: - Top Artists
+    
+    func getTopArtists(username: String, limit: Int, period: String = "overall") async throws -> [TopArtist] {
+        let cacheKey = "artists_\(username)_\(limit)_\(period)"
+        if let cached: [TopArtist] = cached(cacheKey) {
+            return cached
+        }
+        
+        let url = try buildURL(method: "user.gettopartists", parameters: ["user": username, "limit": "\(limit)", "period": period])
+        let (data, _) = try await session.data(from: url)
+        let response = try JSONDecoder().decode(TopArtistsResponse.self, from: data)
+        
+        var artists = response.topartists.artist.map { artist in
+            TopArtist(
+                name: artist.name,
+                playcount: artist.playcount,
+                imageURL: artist.image.last?.text,
+                rank: Int(artist.attr?.rank ?? "0")
+            )
+        }
+        
+        // Replace placeholder images with real artist photos from Deezer
+        let placeholderArtists = artists.filter { imageService.isPlaceholder($0.imageURL) }
+        if !placeholderArtists.isEmpty {
+            let names = placeholderArtists.map { $0.name }
+            let images = await imageService.fetchArtistImages(for: names)
+            
+            for i in artists.indices {
+                if let realImage = images[artists[i].name] {
+                    artists[i] = TopArtist(
+                        name: artists[i].name,
+                        playcount: artists[i].playcount,
+                        imageURL: realImage,
+                        rank: artists[i].rank
+                    )
+                }
+            }
+        }
+        
+        setCache(cacheKey, value: artists)
+        return artists
+    }
+    
+    // MARK: - Top Albums
+    
+    func getTopAlbums(username: String, limit: Int, period: String = "overall") async throws -> [TopAlbum] {
+        let url = try buildURL(method: "user.gettopalbums", parameters: ["user": username, "limit": "\(limit)", "period": period])
+        let (data, _) = try await session.data(from: url)
+        let response = try JSONDecoder().decode(TopAlbumsResponse.self, from: data)
+        
+        return response.topalbums.album.map { album in
+            TopAlbum(
+                name: album.name,
+                artist: album.artist.name,
+                playcount: album.playcount,
+                imageURL: album.image.last?.text,
+                rank: Int(album.attr?.rank ?? "0")
+            )
+        }
+    }
+    
+    // MARK: - Top Tracks
+    
+    func getTopTracks(username: String, limit: Int, period: String = "overall") async throws -> [TopTrack] {
+        let url = try buildURL(method: "user.gettoptracks", parameters: ["user": username, "limit": "\(limit)", "period": period])
+        let (data, _) = try await session.data(from: url)
+        let response = try JSONDecoder().decode(TopTracksResponse.self, from: data)
+        
+        return response.toptracks.track.map { track in
+            TopTrack(
+                name: track.name,
+                artist: track.artist.name,
+                playcount: track.playcount,
+                imageURL: track.image.last?.text,
+                rank: Int(track.attr?.rank ?? "0")
+            )
+        }
+    }
+    
+    // MARK: - User Info
+    
+    func getUserInfo(username: String) async throws -> UserInfo {
+        let url = try buildURL(method: "user.getinfo", parameters: ["user": username])
+        let (data, _) = try await session.data(from: url)
+        let response = try JSONDecoder().decode(UserInfoResponse.self, from: data)
+        
+        return UserInfo(
+            name: response.user.name,
+            realname: response.user.realname,
+            imageURL: response.user.image.last?.text,
+            playcount: response.user.playcount,
+            artistCount: response.user.artistCount,
+            albumCount: response.user.albumCount,
+            trackCount: response.user.trackCount
+        )
+    }
+    
+    // MARK: - Scrobble Counts (for menu bar stats)
+    
+    /// Get exact scrobble count for a specific period.
+    /// Uses user.gettopartists (which supports period) and reads total from response metadata.
+    func getScrobbleCount(username: String, period: String) async throws -> Int {
+        let url = try buildURL(method: "user.gettopartists", parameters: [
+            "user": username,
+            "limit": "1",
+            "period": period
+        ])
+        let (data, _) = try await session.data(from: url)
+        let response = try JSONDecoder().decode(TopArtistsResponse.self, from: data)
+        return Int(response.topartists.attr?.total ?? "0") ?? 0
+    }
+
+    // MARK: - Artist & Album Details (Inspector)
+
+    func getArtistInfo(artist: String, username: String? = nil) async throws -> ArtistDetailInfo {
+        let cacheKey = "artist_info_\(artist)_\(username ?? "")"
+        if let cached: ArtistDetailInfo = cached(cacheKey) {
+            return cached
+        }
+
+        var params = ["artist": artist]
+        if let username = username, !username.isEmpty {
+            params["username"] = username
+        }
+
+        let url = try buildURL(method: "artist.getinfo", parameters: params)
+        let (data, _) = try await session.data(from: url)
+        let response = try JSONDecoder().decode(ArtistInfoResponse.self, from: data)
+        let d = response.artist
+
+        // Fetch top tracks for this artist concurrently
+        var topTracks: [TopTrack] = []
+        if let topTracksURL = try? buildURL(method: "artist.gettoptracks", parameters: ["artist": artist, "limit": "5"]) {
+            if let (ttData, _) = try? await session.data(from: topTracksURL),
+               let ttResponse = try? JSONDecoder().decode(TopTracksResponse.self, from: ttData) {
+                topTracks = ttResponse.toptracks.track.map { t in
+                    TopTrack(name: t.name, artist: t.artist.name, playcount: t.playcount, imageURL: t.image.last?.text, rank: Int(t.attr?.rank ?? "0"))
+                }
+            }
+        }
+
+        var image = d.image?.last?.text
+        if imageService.isPlaceholder(image) {
+            let fetched = await imageService.fetchArtistImages(for: [artist])
+            if let realImg = fetched[artist] {
+                image = realImg
+            }
+        }
+
+        let cleanBio = cleanSummary(d.bio?.summary)
+        let tags = d.tags?.tag?.map { $0.name } ?? []
+        let webURL = d.url != nil ? URL(string: d.url!) : nil
+
+        let result = ArtistDetailInfo(
+            name: d.name,
+            playcount: Int(d.stats?.playcount ?? "0") ?? 0,
+            listeners: Int(d.stats?.listeners ?? "0") ?? 0,
+            userPlaycount: Int(d.stats?.userplaycount ?? ""),
+            bioSummary: cleanBio,
+            tags: tags,
+            topTracks: topTracks,
+            imageURL: image,
+            webURL: webURL
+        )
+        setCache(cacheKey, value: result)
+        return result
+    }
+
+    func getAlbumInfo(artist: String, album: String, username: String? = nil) async throws -> AlbumDetailInfo {
+        let cacheKey = "album_info_\(artist)_\(album)_\(username ?? "")"
+        if let cached: AlbumDetailInfo = cached(cacheKey) {
+            return cached
+        }
+
+        var params = ["artist": artist, "album": album]
+        if let username = username, !username.isEmpty {
+            params["username"] = username
+        }
+
+        let url = try buildURL(method: "album.getinfo", parameters: params)
+        let (data, _) = try await session.data(from: url)
+        let response = try JSONDecoder().decode(AlbumInfoResponse.self, from: data)
+        let d = response.album
+
+        let parsedTracks = d.tracks?.track?.enumerated().map { (idx, t) in
+            AlbumTrackInfo(
+                name: t.name,
+                duration: Int(t.duration ?? "0") ?? 0,
+                rank: Int(t.attr?.rank ?? "\(idx + 1)") ?? (idx + 1)
+            )
+        } ?? []
+
+        let cleanWiki = cleanSummary(d.wiki?.summary)
+        let webURL = d.url != nil ? URL(string: d.url!) : nil
+
+        let result = AlbumDetailInfo(
+            name: d.name,
+            artist: d.artist,
+            playcount: Int(d.playcount ?? "0") ?? 0,
+            listeners: Int(d.listeners ?? "0") ?? 0,
+            userPlaycount: Int(d.userplaycount ?? ""),
+            wikiSummary: cleanWiki.isEmpty ? nil : cleanWiki,
+            releaseDate: d.wiki?.published,
+            tracks: parsedTracks,
+            imageURL: d.image?.last?.text,
+            webURL: webURL
+        )
+        setCache(cacheKey, value: result)
+        return result
+    }
+
+    private func cleanSummary(_ html: String?) -> String {
+        guard let html = html, !html.isEmpty else { return "" }
+        let stripped = html.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression, range: nil)
+        return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
