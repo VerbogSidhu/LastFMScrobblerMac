@@ -1,5 +1,8 @@
 # LastFM Scrobbler for Mac
 
+ai slop readme below
+i used mimo v2.5 for like 99% of it and got gemini 3.8 flash to improve the ui a bunch
+
 A native SwiftUI Last.fm dashboard and scrobbler for macOS. No Electron, no bloat — just a lightweight app that shows your Last.fm stats and scrobbles Apple Music tracks automatically.
 
 ## Features
