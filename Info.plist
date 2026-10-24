@@ -11,6 +11,8 @@
     <string>com.verbog.lastfm</string>
     <key>CFBundleName</key>
     <string>Last.fm</string>
+    <key>CFBundleIconFile</key>
+    <string>LastFM</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
