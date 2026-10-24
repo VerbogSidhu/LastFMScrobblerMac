@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SidebarView: View {
     @EnvironmentObject var appState: AppState
-    @State private var showSettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -74,7 +73,7 @@ struct SidebarView: View {
             // Bottom buttons
             HStack(spacing: DS.Spacing.md) {
                 IconButton(icon: "gearshape.fill", label: "Settings") {
-                    showSettings = true
+                    appState.showSettings = true
                 }
 
                 SecondaryButton(title: "Refresh", icon: appState.isLoading ? nil : "arrow.clockwise") {
@@ -86,7 +85,7 @@ struct SidebarView: View {
         }
         .frame(width: DS.Layout.sidebarWidth)
         .background(.ultraThinMaterial)
-        .sheet(isPresented: $showSettings) {
+        .sheet(isPresented: $appState.showSettings) {
             SettingsContainer()
                 .environmentObject(appState)
         }

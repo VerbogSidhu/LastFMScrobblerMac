@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct PlayingAnimation: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var phase = 0
     @State private var timer: Timer?
 
@@ -20,6 +21,8 @@ struct PlayingAnimation: View {
         }
         .frame(width: 10, height: 14)
         .onAppear {
+            guard !reduceMotion else { return }
+            timer?.invalidate()
             timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { _ in
                 phase = (phase + 1) % heights.count
             }

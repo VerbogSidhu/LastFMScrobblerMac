@@ -14,10 +14,13 @@ class LastFMService {
     }
     
     private var cache: [String: CacheEntry] = [:]
-    private let cacheTTL: TimeInterval = 60 // 60 seconds
+    private let cacheTTL: TimeInterval = 60
+    private let cacheLock = NSLock()
     
     /// Returns cached value if still valid, nil otherwise.
     private func cached<T>(_ key: String) -> T? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
         guard let entry = cache[key],
               Date().timeIntervalSince(entry.timestamp) < cacheTTL else {
             cache.removeValue(forKey: key)
@@ -28,9 +31,22 @@ class LastFMService {
     
     /// Stores value in cache with current timestamp.
     private func setCache(_ key: String, value: Any) {
-        cache[key] = CacheEntry(data: value, timestamp: Date())
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        let now = Date()
+        cache = cache.filter { now.timeIntervalSince($0.value.timestamp) < cacheTTL }
+        if cache.count >= 128, let oldest = cache.min(by: { $0.value.timestamp < $1.value.timestamp })?.key {
+            cache.removeValue(forKey: oldest)
+        }
+        cache[key] = CacheEntry(data: value, timestamp: now)
     }
     
+    func invalidateCache() {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        cache.removeAll()
+    }
+
     // MARK: - Safe URL Builder
     
     /// Builds a URL safely using URLComponents. Throws if the URL cannot be constructed.
@@ -48,68 +64,87 @@ class LastFMService {
         return url
     }
     
-    /// URLSession with in-memory + disk caching (5 min memory, 30 min disk).
-    /// Avoids re-fetching the same data when switching tabs.
-    private let session: URLSession = {
-        let config = URLSessionConfiguration.default
-        config.urlCache = URLCache(
-            memoryCapacity: 1 * 1024 * 1024,   // 1 MB memory
-            diskCapacity: 5 * 1024 * 1024,      // 5 MB disk
-            diskPath: "LastFMAPICache"
-        )
-        config.requestCachePolicy = .reloadRevalidatingCacheData
-        config.timeoutIntervalForRequest = 15
-        config.timeoutIntervalForResource = 30
-        return URLSession(configuration: config)
-    }()
-    
-    // MARK: - Recent Tracks
-    
-    func getRecentTracks(username: String, limit: Int, page: Int = 1) async throws -> (tracks: [RecentTrack], totalPages: Int, total: Int) {
-        let cacheKey = "recent_\(username)_\(limit)_\(page)"
-        if let cached: (tracks: [RecentTrack], totalPages: Int, total: Int) = cached(cacheKey) {
-            return cached
+    private let session: URLSession
+
+    init(session: URLSession? = nil) {
+        if let session {
+            self.session = session
+        } else {
+            let config = URLSessionConfiguration.default
+            config.urlCache = URLCache(memoryCapacity: 1 * 1024 * 1024, diskCapacity: 5 * 1024 * 1024, diskPath: "LastFMAPICache")
+            config.requestCachePolicy = .reloadRevalidatingCacheData
+            config.timeoutIntervalForRequest = 15
+            config.timeoutIntervalForResource = 30
+            self.session = URLSession(configuration: config)
         }
-        
-        let url = try buildURL(method: "user.getrecenttracks", parameters: ["user": username, "limit": "\(limit)", "page": "\(page)"])
-        let (data, _) = try await session.data(from: url)
-        let response = try JSONDecoder().decode(RecentTracksResponse.self, from: data)
-        
+    }
+
+    private func data(from url: URL, forceRefresh: Bool = false) async throws -> Data {
+        try Task.checkCancellation()
+        var request = URLRequest(url: url)
+        if forceRefresh { request.cachePolicy = .reloadIgnoringLocalCacheData }
+        let (data, response) = try await session.data(for: request)
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let code = (json["error"] as? NSNumber)?.intValue {
+            throw LastFMReadError.api(code: code, message: json["message"] as? String ?? "Last.fm request failed.")
+        }
+        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        try Task.checkCancellation()
+        return data
+    }
+
+    // MARK: - Recent Tracks
+
+    func getRecentTracks(username: String, limit: Int, page: Int = 1, from: Date? = nil, to: Date? = nil, forceRefresh: Bool = false) async throws -> (tracks: [RecentTrack], totalPages: Int, total: Int) {
+        let cacheKey = "recent_\(username)_\(limit)_\(page)_\(from?.timeIntervalSince1970 ?? -1)_\(to?.timeIntervalSince1970 ?? -1)"
+        if !forceRefresh, let result: (tracks: [RecentTrack], totalPages: Int, total: Int) = cached(cacheKey) { return result }
+        var parameters = ["user": username, "limit": "\(limit)", "page": "\(page)"]
+        // Keep count metadata and local filtering on the same UTC interval.
+        if let from { parameters["from"] = String(max(0, Int(from.timeIntervalSince1970))) }
+        if let to { parameters["to"] = String(Int(to.timeIntervalSince1970)) }
+        let url = try buildURL(method: "user.getrecenttracks", parameters: parameters)
+        let response = try JSONDecoder().decode(RecentTracksResponse.self, from: try await data(from: url, forceRefresh: forceRefresh))
         let totalPages = Int(response.recenttracks.attr?.totalPages ?? "1") ?? 1
         let total = Int(response.recenttracks.attr?.total ?? "0") ?? 0
-        
         let tracks = response.recenttracks.track.map { track in
-            RecentTrack(
-                name: track.name,
-                artist: track.artist.text,
-                album: track.album.text,
-                imageURL: track.image.last?.text,
-                date: track.date?.uts,
-                nowPlaying: track.attr?.nowplaying != nil
-            )
+            RecentTrack(name: track.name, artist: track.artist.text, album: track.album.text,
+                        imageURL: track.image.last?.text, date: track.date?.uts,
+                        nowPlaying: track.attr?.nowplaying == "true")
         }
-        
         let result = (tracks, totalPages, total)
         setCache(cacheKey, value: result)
         return result
     }
-    
-    /// Fetch all recent tracks across multiple pages (up to maxPages).
-    func getAllRecentTracks(username: String, maxPages: Int = 20) async throws -> [RecentTrack] {
+
+    /// A fixed upper bound keeps pagination stable when new music is scrobbled during a load.
+    /// Every page is fetched; a failed/incomplete load throws rather than inventing zero days.
+    func getTracks(username: String, from: Date, to: Date, forceRefresh: Bool = false) async throws -> [RecentTrack] {
         var allTracks: [RecentTrack] = []
         var page = 1
         var totalPages = 1
-        
-        while page <= maxPages && page <= totalPages {
-            let result = try await getRecentTracks(username: username, limit: 50, page: page)
-            allTracks.append(contentsOf: result.tracks)
+        repeat {
+            try Task.checkCancellation()
+            let result = try await getRecentTracks(username: username, limit: 200, page: page, from: from, to: to, forceRefresh: forceRefresh)
             totalPages = result.totalPages
+            let completed = result.tracks.filter { track in
+                guard !track.nowPlaying, let uts = track.date, let seconds = TimeInterval(uts) else { return false }
+                let date = Date(timeIntervalSince1970: seconds)
+                return date >= from && date <= to
+            }
+            allTracks.append(contentsOf: completed)
+            if result.tracks.isEmpty && page < totalPages { throw LastFMReadError.incompleteHistory }
             page += 1
-        }
-        
+        } while page <= totalPages
         return allTracks
     }
-    
+
+    /// Compatibility for older callers. Exact bounded analytics use getTracks instead.
+    func getAllRecentTracks(username: String, maxPages: Int = 20) async throws -> [RecentTrack] {
+        try await getTracks(username: username, from: Date(timeIntervalSince1970: 0), to: Date())
+    }
+
     // MARK: - Top Artists
     
     func getTopArtists(username: String, limit: Int, period: String = "overall") async throws -> [TopArtist] {
@@ -119,7 +154,7 @@ class LastFMService {
         }
         
         let url = try buildURL(method: "user.gettopartists", parameters: ["user": username, "limit": "\(limit)", "period": period])
-        let (data, _) = try await session.data(from: url)
+        let data = try await data(from: url)
         let response = try JSONDecoder().decode(TopArtistsResponse.self, from: data)
         
         var artists = response.topartists.artist.map { artist in
@@ -157,7 +192,7 @@ class LastFMService {
     
     func getTopAlbums(username: String, limit: Int, period: String = "overall") async throws -> [TopAlbum] {
         let url = try buildURL(method: "user.gettopalbums", parameters: ["user": username, "limit": "\(limit)", "period": period])
-        let (data, _) = try await session.data(from: url)
+        let data = try await data(from: url)
         let response = try JSONDecoder().decode(TopAlbumsResponse.self, from: data)
         
         return response.topalbums.album.map { album in
@@ -175,7 +210,7 @@ class LastFMService {
     
     func getTopTracks(username: String, limit: Int, period: String = "overall") async throws -> [TopTrack] {
         let url = try buildURL(method: "user.gettoptracks", parameters: ["user": username, "limit": "\(limit)", "period": period])
-        let (data, _) = try await session.data(from: url)
+        let data = try await data(from: url)
         let response = try JSONDecoder().decode(TopTracksResponse.self, from: data)
         
         return response.toptracks.track.map { track in
@@ -193,7 +228,7 @@ class LastFMService {
     
     func getUserInfo(username: String) async throws -> UserInfo {
         let url = try buildURL(method: "user.getinfo", parameters: ["user": username])
-        let (data, _) = try await session.data(from: url)
+        let data = try await data(from: url)
         let response = try JSONDecoder().decode(UserInfoResponse.self, from: data)
         
         return UserInfo(
@@ -209,17 +244,28 @@ class LastFMService {
     
     // MARK: - Scrobble Counts (for menu bar stats)
     
-    /// Get exact scrobble count for a specific period.
-    /// Uses user.gettopartists (which supports period) and reads total from response metadata.
+    /// Read the number of plays, not the number of unique artists.
+    func getScrobbleCount(username: String, from: Date, to: Date) async throws -> Int {
+        // Last.fm's recent-track metadata counts completed scrobbles in this range.
+        let result = try await getRecentTracks(username: username, limit: 1, from: from, to: to, forceRefresh: true)
+        return result.total
+    }
+
     func getScrobbleCount(username: String, period: String) async throws -> Int {
-        let url = try buildURL(method: "user.gettopartists", parameters: [
-            "user": username,
-            "limit": "1",
-            "period": period
-        ])
-        let (data, _) = try await session.data(from: url)
-        let response = try JSONDecoder().decode(TopArtistsResponse.self, from: data)
-        return Int(response.topartists.attr?.total ?? "0") ?? 0
+        let now = Date()
+        let calendar = Calendar.current
+        let start: Date
+        switch period {
+        case "1day": start = calendar.startOfDay(for: now)
+        case "7day": start = calendar.date(byAdding: .day, value: -7, to: now)!
+        case "1month": start = calendar.date(byAdding: .month, value: -1, to: now)!
+        case "3month": start = calendar.date(byAdding: .month, value: -3, to: now)!
+        case "6month": start = calendar.date(byAdding: .month, value: -6, to: now)!
+        case "12month": start = calendar.date(byAdding: .year, value: -1, to: now)!
+        case "overall": start = Date(timeIntervalSince1970: 0)
+        default: throw LastFMReadError.unsupportedPeriod
+        }
+        return try await getScrobbleCount(username: username, from: start, to: now)
     }
 
     // MARK: - Artist & Album Details (Inspector)
@@ -236,7 +282,7 @@ class LastFMService {
         }
 
         let url = try buildURL(method: "artist.getinfo", parameters: params)
-        let (data, _) = try await session.data(from: url)
+        let data = try await data(from: url)
         let response = try JSONDecoder().decode(ArtistInfoResponse.self, from: data)
         let d = response.artist
 
@@ -290,7 +336,7 @@ class LastFMService {
         }
 
         let url = try buildURL(method: "album.getinfo", parameters: params)
-        let (data, _) = try await session.data(from: url)
+        let data = try await data(from: url)
         let response = try JSONDecoder().decode(AlbumInfoResponse.self, from: data)
         let d = response.album
 
@@ -325,5 +371,20 @@ class LastFMService {
         guard let html = html, !html.isEmpty else { return "" }
         let stripped = html.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression, range: nil)
         return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+
+enum LastFMReadError: LocalizedError {
+    case api(code: Int, message: String)
+    case incompleteHistory
+    case unsupportedPeriod
+
+    var errorDescription: String? {
+        switch self {
+        case .api(_, let message): return message
+        case .incompleteHistory: return "Last.fm returned incomplete listening history. Please retry."
+        case .unsupportedPeriod: return "This listening period is not supported."
+        }
     }
 }

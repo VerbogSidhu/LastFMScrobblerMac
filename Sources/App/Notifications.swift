@@ -1,6 +1,8 @@
 import Foundation
 
 extension Notification.Name {
+    static let dashboardDidRefresh = Notification.Name("dashboardDidRefresh")
+    static let accountDidChange = Notification.Name("accountDidChange")
     /// Posted when a track is successfully scrobbled to Last.fm.
     static let scrobbleDidComplete = Notification.Name("scrobbleDidComplete")
     /// Posted when Apple Music detects a track change or skip.

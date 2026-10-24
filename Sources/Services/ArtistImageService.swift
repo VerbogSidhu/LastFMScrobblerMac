@@ -48,7 +48,7 @@ actor ArtistImageService {
             let (data, _) = try await URLSession.shared.data(from: url)
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let results = json["data"] as? [[String: Any]],
-                  let first = results.first,
+                  let first = results.first(where: { ($0["name"] as? String)?.caseInsensitiveCompare(artistName) == .orderedSame }),
                   let pictureXL = first["picture_xl"] as? String,
                   !pictureXL.isEmpty else {
                 return nil
@@ -63,38 +63,50 @@ actor ArtistImageService {
         }
     }
 
-    /// Fetch album cover from Deezer API as a fallback when Apple Music has no embedded artwork.
-    func fetchAlbumCover(artist: String, trackOrAlbum: String) async -> String? {
-        let cacheKey = "cover_\(artist)_\(trackOrAlbum)"
-        if let cached = cache[cacheKey] {
-            return cached
-        }
-
-        let query = "\(artist) \(trackOrAlbum)"
-        guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "https://api.deezer.com/search?q=\(encoded)") else {
-            return nil
-        }
-
+    /// Album and artist must both match. An ambiguous song-only lookup is not artwork evidence.
+    func fetchAlbumCover(artist: String, album: String, track: String) async -> String? {
+        let parts = [artist, album, track]
+        let cacheKey = "cover-v3:" + ((try? JSONEncoder().encode(parts)).flatMap { String(data: $0, encoding: .utf8) } ?? "")
+        if let cached = cache[cacheKey] { return cached }
+        var components = URLComponents(string: "https://api.deezer.com/search")!
+        components.queryItems = [URLQueryItem(name: "q", value: "\(artist) \(album.isEmpty ? track : album)")]
+        guard let url = components.url else { return nil }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let results = json["data"] as? [[String: Any]],
-                  let first = results.first,
-                  let album = first["album"] as? [String: Any],
-                  let cover = (album["cover_xl"] as? String) ?? (album["cover_big"] as? String),
-                  !cover.isEmpty else {
-                return nil
-            }
-
+            let (data, response) = try await session.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200,
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let rows = json["data"] as? [[String: Any]],
+                  let cover = Self.matchingCover(in: rows, artist: artist, album: album, track: track) else { return nil }
+            try Task.checkCancellation()
             cache[cacheKey] = cover
             persistCache()
             return cover
-        } catch {
-            return nil
-        }
+        } catch { return nil }
     }
-    
+
+    nonisolated static func matchingCover(in rows: [[String: Any]], artist: String, album: String, track: String) -> String? {
+        func normalized(_ value: String) -> String {
+            value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+                .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        }
+        guard !artist.isEmpty else { return nil }
+        let matches = rows.compactMap { row -> String? in
+            guard let candidateArtist = (row["artist"] as? [String: Any])?["name"] as? String,
+                  normalized(candidateArtist) == normalized(artist),
+                  let candidate = row["album"] as? [String: Any] else { return nil }
+            if !album.isEmpty {
+                guard let title = candidate["title"] as? String, normalized(title) == normalized(album) else { return nil }
+            } else {
+                guard let title = row["title"] as? String, normalized(title) == normalized(track) else { return nil }
+            }
+            let cover = (candidate["cover_xl"] as? String) ?? (candidate["cover_big"] as? String)
+            guard let cover, !cover.isEmpty, URL(string: cover)?.scheme == "https" else { return nil }
+            return cover
+        }
+        let distinct = Set(matches)
+        return distinct.count == 1 ? distinct.first : nil
+    }
+
     /// Batch-fetch artist images. Returns a dictionary of artist name -> image URL.
     /// Fetches in parallel for speed, with a concurrency limit to avoid overwhelming Deezer.
     func fetchArtistImages(for artistNames: [String]) async -> [String: String] {
@@ -156,6 +168,7 @@ actor ArtistImageService {
     
     private func persistCache() {
         guard let data = try? JSONEncoder().encode(cache) else { return }
+        try? FileManager.default.createDirectory(at: cacheFile.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: cacheFile, options: .atomic)
     }
 }

@@ -1,161 +1,110 @@
 import Foundation
 import CryptoKit
+import ImageIO
 
-/// On-disk image cache. Stores downloaded image data in
-/// ~/Library/Application Support/LastFM/ImageCache/ keyed by SHA-256 of the URL.
-/// Provides file:// URLs for use with AsyncImage.
-class DiskImageCache {
+/// Validated image data, with serialized filesystem and lookup access.
+final class DiskImageCache {
     static let shared = DiskImageCache()
-    
     private let cacheDir: URL
-    private let fileManager = FileManager.default
-    private var inMemoryLookup: [String: URL] = [:]  // url string -> file URL
-    
-    /// Max cache size in bytes (50 MB). Evicts oldest files when exceeded.
-    private let maxCacheBytes: Int = 50 * 1024 * 1024
-    
-    /// Only run trim every N calls to avoid excessive I/O.
-    private var callCount = 0
-    private let trimInterval = 20
-    
-    private init() {
-        let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        cacheDir = appSupport.appendingPathComponent("LastFM/ImageCache", isDirectory: true)
-        try? fileManager.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        
-        // Build in-memory lookup from existing files
-        if let files = try? fileManager.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: [.creationDateKey]) {
-            for file in files where file.pathExtension == "img" {
-                let key = file.deletingPathExtension().lastPathComponent
-                inMemoryLookup[key] = file
+    private let session: URLSession
+    private let lock = NSLock()
+    private var generation = 0
+    private let maxCacheBytes = 50 * 1024 * 1024
+
+    init(directory: URL? = nil, session: URLSession = .shared) {
+        self.session = session
+        cacheDir = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LastFM/ImageCache", isDirectory: true)
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+    }
+
+    private func synchronized<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock(); defer { lock.unlock() }
+        return try body()
+    }
+
+    private func fileURL(for source: String) -> URL {
+        let key = SHA256.hash(data: Data(source.utf8)).map { String(format: "%02x", $0) }.joined()
+        return cacheDir.appendingPathComponent("\(key).img")
+    }
+
+    private func isImage(_ data: Data) -> Bool {
+        guard let image = CGImageSourceCreateWithData(data as CFData, nil), CGImageSourceGetCount(image) > 0 else { return false }
+        return CGImageSourceCreateImageAtIndex(image, 0, nil) != nil
+    }
+
+    func cachedURL(for source: String) -> URL? {
+        synchronized {
+            let file = fileURL(for: source)
+            guard let data = try? Data(contentsOf: file) else { return nil }
+            guard isImage(data) else {
+                try? FileManager.default.removeItem(at: file)
+                return nil
             }
+            return file
         }
     }
-    
-    // MARK: - Public API
-    
-    /// Returns a file:// URL if the image is already cached, nil otherwise.
-    func cachedURL(for urlString: String) -> URL? {
-        let key = hashKey(urlString)
-        if let existing = inMemoryLookup[key], fileManager.fileExists(atPath: existing.path) {
-            return existing
-        }
-        return nil
-    }
-    
-    /// Returns cached URL if available, otherwise downloads, caches, and returns the file URL.
-    func fetchAndCache(from urlString: String) async -> URL? {
-        // Check cache first
-        if let cached = cachedURL(for: urlString) {
-            return cached
-        }
-        
-        guard let url = URL(string: urlString) else { return nil }
-        
+
+    func fetchAndCache(from source: String) async -> URL? {
+        if let cached = cachedURL(for: source) { return cached }
+        guard let url = URL(string: source), ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        let requestGeneration = synchronized { generation }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            guard !data.isEmpty else { return nil }
-            
-            let key = hashKey(urlString)
-            let fileURL = cacheDir.appendingPathComponent("\(key).img")
-            try data.write(to: fileURL)
-            
-            await MainActor.run {
-                inMemoryLookup[key] = fileURL
+            let (data, response) = try await session.data(from: url)
+            try Task.checkCancellation()
+            guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
+                  data.count <= 15 * 1024 * 1024, isImage(data) else { return nil }
+            return synchronized {
+                guard generation == requestGeneration else { return nil }
+                let file = fileURL(for: source)
+                do {
+                    try data.write(to: file, options: .atomic)
+                    trimCache()
+                    return FileManager.default.fileExists(atPath: file.path) ? file : nil
+                } catch { return nil }
             }
-            
-            // Only trim cache every N calls to avoid excessive I/O
-            callCount += 1
-            if callCount >= trimInterval {
-                callCount = 0
-                trimCacheIfNeeded()
-            }
-            
-            return fileURL
-        } catch {
-            return nil
-        }
+        } catch { return nil }
     }
-    
-    /// Prefetch a batch of image URLs in parallel. Returns a dict of url -> file URL for successful fetches.
-    func prefetch(_ urlStrings: [String]) async -> [String: URL] {
-        var results: [String: URL] = [:]
-        
-        // Only fetch URLs that aren't already cached
-        let toFetch = urlStrings.filter { cachedURL(for: $0) == nil }
-        
+
+    func prefetch(_ sources: [String]) async -> [String: URL] {
         await withTaskGroup(of: (String, URL?).self) { group in
-            for urlString in toFetch {
-                group.addTask { [self] in
-                    let fileURL = await self.fetchAndCache(from: urlString)
-                    return (urlString, fileURL)
-                }
+            var results: [String: URL] = [:]
+            var iterator = Array(Set(sources)).makeIterator()
+            for _ in 0..<5 {
+                if let source = iterator.next() { group.addTask { (source, await self.fetchAndCache(from: source)) } }
             }
-            
-            for await (urlString, fileURL) in group {
-                if let fileURL {
-                    results[urlString] = fileURL
-                }
+            while let (source, file) = await group.next() {
+                if let file { results[source] = file }
+                if let next = iterator.next() { group.addTask { (next, await self.fetchAndCache(from: next)) } }
             }
+            return results
         }
-        
-        // Include already-cached URLs
-        for urlString in urlStrings {
-            if let cached = cachedURL(for: urlString) {
-                results[urlString] = cached
-            }
-        }
-        
-        return results
     }
-    
-    /// Remove all cached images.
+
     func clearCache() {
-        try? fileManager.removeItem(at: cacheDir)
-        try? fileManager.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        inMemoryLookup.removeAll()
-    }
-    
-    /// Current cache size in bytes.
-    func cacheSize() -> Int {
-        guard let files = try? fileManager.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
-        return files.reduce(0) { sum, file in
-            sum + ((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        synchronized {
+            generation += 1
+            try? FileManager.default.removeItem(at: cacheDir)
+            try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         }
     }
-    
-    // MARK: - Private
-    
-    private func hashKey(_ urlString: String) -> String {
-        let digest = SHA256.hash(data: Data(urlString.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
+
+    func cacheSize() -> Int { synchronized { files().reduce(0) { $0 + $1.size } } }
+
+    private func files() -> [(url: URL, size: Int, created: Date)] {
+        let urls = (try? FileManager.default.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey])) ?? []
+        return urls.compactMap { url in
+            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .creationDateKey]) else { return nil }
+            return (url, values.fileSize ?? 0, values.creationDate ?? .distantPast)
+        }
     }
-    
-    private func trimCacheIfNeeded() {
-        guard let files = try? fileManager.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: [.fileSizeKey, .creationDateKey]) else { return }
-        
-        let totalSize = files.reduce(0) { sum, file in
-            sum + ((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-        }
-        
-        guard totalSize > maxCacheBytes else { return }
-        
-        // Sort by creation date (oldest first) and remove until under limit
-        let sorted = files.sorted { a, b in
-            let aDate = (try? a.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-            let bDate = (try? b.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-            return aDate < bDate
-        }
-        
-        var runningSize = totalSize
-        for file in sorted {
-            guard runningSize > maxCacheBytes * 8 / 10 else { break }  // trim to 80%
-            let fileSize = ((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
-            try? fileManager.removeItem(at: file)
-            runningSize -= fileSize
-            
-            let key = file.deletingPathExtension().lastPathComponent
-            inMemoryLookup.removeValue(forKey: key)
+
+    private func trimCache() {
+        let entries = files().sorted { $0.created < $1.created }
+        var bytes = entries.reduce(0) { $0 + $1.size }
+        guard bytes > maxCacheBytes else { return }
+        for entry in entries where bytes > maxCacheBytes * 8 / 10 {
+            if (try? FileManager.default.removeItem(at: entry.url)) != nil { bytes -= entry.size }
         }
     }
 }

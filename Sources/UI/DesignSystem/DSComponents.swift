@@ -272,10 +272,8 @@ struct RankedList<Items: RandomAccessCollection, ID: Hashable, RowContent: View>
             VStack(alignment: .leading, spacing: DS.Spacing.md) {
                 SectionHeader(title: title, icon: icon)
 
-                ForEach(items, id: id) { item in
-                    let index = items.firstIndex(where: { $0[keyPath: id] == item[keyPath: id] }) ?? items.startIndex
-                    let rank = items.distance(from: items.startIndex, to: index) + 1
-                    itemBuilder(rank, item)
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    itemBuilder(index + 1, item)
                 }
             }
         }

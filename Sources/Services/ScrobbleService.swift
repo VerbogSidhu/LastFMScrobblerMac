@@ -2,242 +2,146 @@ import Foundation
 import CryptoKit
 import AppKit
 
-/// Handles Last.fm API authentication and scrobble submission.
-class ScrobbleService {
-    // Default API key (same as read-only). Users should register their own app
-    // at https://www.last.fm/api/account/create to get a secret for scrobbling.
+struct AuthenticatedSession {
+    let key: String
+    let name: String
+}
+
+/// Signed Last.fm writes. A normal return always means the server accepted the operation.
+final class ScrobbleService {
     static let defaultAPIKey = ""
-    
-    private let apiKey: String
-    private let apiSecret: String
-    private let baseURL = "https://ws.audioscrobbler.com/2.0/"
-    private let session = URLSession.shared
-    
-    init(apiKey: String = ScrobbleService.defaultAPIKey, apiSecret: String = "") {
-        self.apiKey = apiKey
-        self.apiSecret = apiSecret
+    private let explicitCredentials: (key: String, secret: String)?
+    private let credentialStore: CredentialStore
+    private let session: URLSession
+    private let baseURL = URL(string: "https://ws.audioscrobbler.com/2.0/")!
+
+    init(apiKey: String? = nil, apiSecret: String? = nil, session: URLSession = .shared, credentialStore: CredentialStore = .shared) {
+        self.explicitCredentials = apiKey != nil || apiSecret != nil ? (apiKey ?? "", apiSecret ?? "") : nil
+        self.credentialStore = credentialStore
+        self.session = session
     }
-    
+
+    private var credentials: (key: String, secret: String) {
+        explicitCredentials ?? credentialStore.credentialSnapshot()
+    }
+
     var isConfigured: Bool {
-        !apiSecret.isEmpty
+        let value = credentials
+        return !value.key.isEmpty && !value.secret.isEmpty
     }
-    
-    // MARK: - API Signature
-    
-    private func apiSignature(params: [String: String]) -> String {
-        let sorted = params.sorted { $0.key < $1.key }
-        var combined = ""
-        for (key, value) in sorted {
-            combined += key + value
-        }
-        combined += apiSecret
-        
-        let digest = Insecure.MD5.hash(data: Data(combined.utf8))
-        let sig = digest.map { String(format: "%02x", $0) }.joined()
-        
-        #if DEBUG
-        NSLog("[Scrobble] computed_sig: %@", sig)
-        #endif
-        
-        return sig
+
+    private func signature(_ parameters: [String: String], secret: String) -> String {
+        let payload = parameters.sorted { $0.key < $1.key }.map { $0.key + $0.value }.joined() + secret
+        return Insecure.MD5.hash(data: Data(payload.utf8)).map { String(format: "%02x", $0) }.joined()
     }
-    
-    // MARK: - URL / Request Helpers
-    
-    /// Safely constructs the base Last.fm API URL, throwing if the URL is invalid.
-    private func lastFMURL() throws -> URL {
-        guard let url = URL(string: baseURL) else {
-            throw ScrobbleError.invalidURL
-        }
-        return url
+
+    private func post(_ method: String, parameters: [String: String]) async throws -> (json: [String: Any], data: Data, status: Int) {
+        let value = credentials
+        guard !value.key.isEmpty, !value.secret.isEmpty else { throw ScrobbleError.notConfigured }
+        var params = parameters
+        params["method"] = method
+        params["api_key"] = value.key
+        params["api_sig"] = signature(params, secret: value.secret)
+        params["format"] = "json"
+        var components = URLComponents()
+        components.queryItems = params.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
+        var request = URLRequest(url: baseURL)
+        request.httpMethod = "POST"
+        request.httpBody = components.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B").data(using: .utf8)
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 20
+        return try await response(for: request)
     }
-    
-    /// Builds a POST URLRequest with form-encoded body from the given parameters.
-        /// Uses URLComponents for proper percent-encoding (spaces as %20, special chars as %XX).
-        private func buildPOSTRequest(url: URL, parameters: [String: String]) -> URLRequest {
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-        
-            // URLComponents properly encodes for application/x-www-form-urlencoded
-            var components = URLComponents()
-            components.queryItems = parameters
-                .sorted { $0.key < $1.key }
-                .map { URLQueryItem(name: $0.key, value: $0.value) }
-            // Use the percent-encoded query as the body, but escape literal '+' signs.
-            // URLComponents leaves a real '+' in a value unescaped, yet Last.fm form-decodes
-            // '+' as a space — which would make the server recompute a DIFFERENT api_sig
-            // than the one we signed over the raw value, triggering error 13
-            // ("Invalid method signature"). Escaping '+' as %2B keeps the round-trip exact
-            // (URLComponents already encodes actual spaces as %20, not '+').
-            var encoded = components.percentEncodedQuery ?? ""
-            encoded = encoded.replacingOccurrences(of: "+", with: "%2B")
-            request.httpBody = encoded.data(using: .utf8)
-        
-            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-            return request
+
+    private func response(for request: URLRequest) async throws -> (json: [String: Any], data: Data, status: Int) {
+        let (data, response) = try await session.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        // API codes explain permanent/auth failures even when HTTP status is not 200.
+        if let json, let code = integer(json["error"]) {
+            throw ScrobbleError.apiError(code, json["message"] as? String ?? "The request was rejected")
         }
-    
-    // MARK: - Authentication
-    
-    /// Step 1: Get a request token (no signature needed).
+        guard (200...299).contains(status) else { throw ScrobbleError.httpError(status) }
+        guard let json else { throw ScrobbleError.malformedResponse }
+        return (json, data, status)
+    }
+
     func getRequestToken() async throws -> String {
-        guard let url = URL(string: "\(baseURL)?method=auth.getToken&api_key=\(apiKey)&format=json") else {
-            throw ScrobbleError.invalidURL
-        }
-        let (data, _) = try await session.data(from: url)
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        
-        guard let token = json?["token"] as? String else {
-            throw ScrobbleError.noToken
-        }
+        let value = credentials
+        guard !value.key.isEmpty else { throw ScrobbleError.notConfigured }
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        components.queryItems = [URLQueryItem(name: "method", value: "auth.getToken"), URLQueryItem(name: "api_key", value: value.key), URLQueryItem(name: "format", value: "json")]
+        guard let url = components.url else { throw ScrobbleError.invalidURL }
+        let result = try await response(for: URLRequest(url: url))
+        guard let token = result.json["token"] as? String, !token.isEmpty else { throw ScrobbleError.noToken }
         return token
     }
-    
-    /// Step 2: Open browser for user authorization.
+
     func openAuthorization(token: String) {
-        let urlString = "https://www.last.fm/api/auth/?api_key=\(apiKey)&token=\(token)"
-        if let url = URL(string: urlString) {
-            NSWorkspace.shared.open(url)
+        var components = URLComponents(string: "https://www.last.fm/api/auth/")!
+        components.queryItems = [URLQueryItem(name: "api_key", value: credentials.key), URLQueryItem(name: "token", value: token)]
+        if let url = components.url {
+            DispatchQueue.main.async { NSWorkspace.shared.open(url) }
         }
     }
-    
-    /// Step 3: Get session key after user authorizes (signed call).
+
+    func getAuthenticatedSession(token: String) async throws -> AuthenticatedSession {
+        let result = try await post("auth.getSession", parameters: ["token": token])
+        guard let session = result.json["session"] as? [String: Any],
+              let key = session["key"] as? String, !key.isEmpty,
+              let name = session["name"] as? String, !name.isEmpty else { throw ScrobbleError.noSession }
+        return AuthenticatedSession(key: key, name: name)
+    }
+
+    func getAuthenticatedUsername(sessionKey: String) async throws -> String {
+        let result = try await post("user.getInfo", parameters: ["sk": sessionKey])
+        guard let user = result.json["user"] as? [String: Any],
+              let name = user["name"] as? String, !name.isEmpty else { throw ScrobbleError.malformedResponse }
+        return name
+    }
+
     func getSession(token: String) async throws -> String {
-        var params = [
-            "method": "auth.getSession",
-            "api_key": apiKey,
-            "token": token
-        ]
-        params["api_sig"] = apiSignature(params: params)
-        params["format"] = "json"
-        
-        let request = try buildPOSTRequest(url: lastFMURL(), parameters: params)
-        let (data, _) = try await session.data(for: request)
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        
-        guard let session = json?["session"] as? [String: Any],
-              let sessionKey = session["key"] as? String else {
-            throw ScrobbleError.noSession
-        }
-        return sessionKey
+        try await getAuthenticatedSession(token: token).key
     }
-    
-    // MARK: - Scrobble
-    
-    /// Submit a scrobble to Last.fm.
+
     func scrobble(track: String, artist: String, album: String, duration: Int, timestamp: Int, sessionKey: String) async throws {
-        var params: [String: String] = [
-            "method": "track.scrobble",
-            "api_key": apiKey,
-            "sk": sessionKey,
-            "track": track,
-            "artist": artist,
-            "timestamp": String(timestamp),
-            "duration": String(duration),
-            "album": album
-        ]
-        
-        NSLog("[Scrobble] Params: track=%@ artist=%@ album=%@ dur=%d ts=%d", track, artist, album, duration, timestamp)
-        
-        params["api_sig"] = apiSignature(params: params)
-        params["format"] = "json"
-        
-        let request = try buildPOSTRequest(url: lastFMURL(), parameters: params)
-        
-        let (data, response) = try await session.data(for: request)
-        let httpResponse = response as? HTTPURLResponse
-        let statusCode = httpResponse?.statusCode ?? 0
-        let jsonString = String(data: data, encoding: .utf8) ?? "NO BODY"
-        NSLog("[Scrobble] HTTP %d — %@", statusCode, jsonString)
-        
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        
-        if let scrobbles = json?["scrobbles"] as? [String: Any],
-           let attr = scrobbles["@attr"] as? [String: Any],
-           let accepted = attr["accepted"] as? Int, accepted > 0 {
-            NSLog("[Scrobble] Accepted: %d track(s)", accepted)
-        } else if let error = json?["error"] as? Int {
-            let message = json?["message"] as? String ?? "unknown"
-            NSLog("[Scrobble] API error %d: %@", error, message)
-            throw ScrobbleError.apiError(error, message)
-        } else {
-            NSLog("[Scrobble] Unexpected response: %@", "\(json ?? [:])")
+        let result = try await post("track.scrobble", parameters: ["sk": sessionKey, "track": track, "artist": artist, "timestamp": String(timestamp), "duration": String(duration), "album": album])
+        guard let scrobbles = result.json["scrobbles"] as? [String: Any],
+              let attr = scrobbles["@attr"] as? [String: Any],
+              let accepted = integer(attr["accepted"]), let ignored = integer(attr["ignored"]) else {
+            throw ScrobbleError.malformedResponse
+        }
+        guard accepted == 1 && ignored == 0 else {
+            if ignored > 0 {
+                let entry = (scrobbles["scrobble"] as? [String: Any]) ?? (scrobbles["scrobble"] as? [[String: Any]])?.first
+                let message = entry?["ignoredMessage"] as? [String: Any]
+                throw ScrobbleError.ignored(integer(message?["code"]) ?? 0, message?["#text"] as? String ?? "Last.fm did not accept this play")
+            }
+            throw ScrobbleError.malformedResponse
         }
     }
-    
-    // MARK: - Love / Unlove
-    
-    /// Love a track on Last.fm.
+
     func loveTrack(track: String, artist: String, sessionKey: String) async throws {
-        var params: [String: String] = [
-            "method": "track.love",
-            "api_key": apiKey,
-            "sk": sessionKey,
-            "track": track,
-            "artist": artist
-        ]
-        params["api_sig"] = apiSignature(params: params)
-        params["format"] = "json"
-        
-        let request = try buildPOSTRequest(url: lastFMURL(), parameters: params)
-        
-        let (_, response) = try await session.data(for: request)
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard statusCode == 200 else {
-            throw ScrobbleError.apiError(statusCode, "HTTP status ")
-        }
+        _ = try await post("track.love", parameters: ["sk": sessionKey, "track": track, "artist": artist])
     }
-    
-    /// Unlove a track on Last.fm.
+
     func unloveTrack(track: String, artist: String, sessionKey: String) async throws {
-        var params: [String: String] = [
-            "method": "track.unlove",
-            "api_key": apiKey,
-            "sk": sessionKey,
-            "track": track,
-            "artist": artist
-        ]
-        params["api_sig"] = apiSignature(params: params)
-        params["format"] = "json"
-        
-        let request = try buildPOSTRequest(url: lastFMURL(), parameters: params)
-        
-        let (_, response) = try await session.data(for: request)
-        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard statusCode == 200 else {
-            throw ScrobbleError.apiError(statusCode, "HTTP status ")
-        }
+        _ = try await post("track.unlove", parameters: ["sk": sessionKey, "track": track, "artist": artist])
     }
-    
-    /// Update now-playing status. Returns (statusCode, responseBody) for debug logging.
+
     func updateNowPlaying(track: String, artist: String, album: String, duration: Int, sessionKey: String) async throws -> (Int, String) {
-        var params: [String: String] = [
-            "method": "track.updateNowPlaying",
-            "api_key": apiKey,
-            "sk": sessionKey,
-            "track": track,
-            "artist": artist,
-            "duration": String(duration),
-            "album": album
-        ]
-        params["api_sig"] = apiSignature(params: params)
-        params["format"] = "json"
-        
-        let request = try buildPOSTRequest(url: lastFMURL(), parameters: params)
-        
-        let (data, response) = try await session.data(for: request)
-        let httpResponse = response as? HTTPURLResponse
-        let statusCode = httpResponse?.statusCode ?? 0
-        let jsonString = String(data: data, encoding: .utf8) ?? "NO BODY"
-        
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        
-        if let error = json?["error"] as? Int {
-            let message = json?["message"] as? String ?? "unknown"
-            throw ScrobbleError.apiError(error, message)
-        }
-        
-        return (statusCode, jsonString)
+        let result = try await post("track.updateNowPlaying", parameters: ["sk": sessionKey, "track": track, "artist": artist, "album": album, "duration": String(duration)])
+        guard let nowPlaying = result.json["nowplaying"] as? [String: Any],
+              let message = nowPlaying["ignoredMessage"] as? [String: Any],
+              let code = integer(message["code"]) else { throw ScrobbleError.malformedResponse }
+        guard code == 0 else { throw ScrobbleError.ignored(code, message["#text"] as? String ?? "Now playing was ignored") }
+        return (result.status, String(data: result.data, encoding: .utf8) ?? "")
+    }
+
+    private func integer(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        if let string = value as? String { return Int(string) }
+        return nil
     }
 }
 
@@ -246,13 +150,38 @@ enum ScrobbleError: LocalizedError {
     case noSession
     case apiError(Int, String)
     case invalidURL
-    
+    case notConfigured
+    case malformedResponse
+    case httpError(Int)
+    case ignored(Int, String)
+
+    var isAuthenticationError: Bool {
+        switch self {
+        case .noSession, .notConfigured: return true
+        case .apiError(let code, _): return [4, 9, 10, 13, 26].contains(code)
+        default: return false
+        }
+    }
+
+    var isRetryable: Bool {
+        switch self {
+        case .apiError(let code, _): return [11, 16, 29].contains(code)
+        case .httpError(let code): return code == 408 || code == 429 || code >= 500
+        case .malformedResponse: return true
+        default: return false
+        }
+    }
+
     var errorDescription: String? {
         switch self {
-        case .noToken: return "Failed to get request token from Last.fm"
-        case .noSession: return "Failed to get session — did you authorize?"
-        case .apiError(let code, let message): return "Last.fm API error \(code): \(message)"
-        case .invalidURL: return "Invalid URL configuration"
+        case .noToken: return "Last.fm did not provide an authorization token. Please try again."
+        case .noSession: return "Last.fm has not authorized this session yet."
+        case .apiError(let code, let message): return "Last.fm error \(code): \(message)"
+        case .invalidURL: return "The Last.fm address is invalid."
+        case .notConfigured: return "Enter an API key and secret in Account settings, then connect to Last.fm."
+        case .malformedResponse: return "Last.fm returned an incomplete response. This play has not been marked accepted."
+        case .httpError(let code): return "Last.fm could not complete the request (HTTP \(code))."
+        case .ignored(_, let message): return "Last.fm ignored this play: \(message)"
         }
     }
 }

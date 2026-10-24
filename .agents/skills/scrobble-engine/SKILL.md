@@ -14,14 +14,12 @@ Use this skill when modifying or debugging the audio detection, state transition
 - `Sources/Services/ScrobbleService.swift`: API caller generating MD5 request signatures and submitting to Last.fm.
 
 ## Scrobbler State Rules
-1. **Minimum Duration**: `track.duration > 30` seconds. Tracks shorter than 30s are ignored.
-2. **Scrobble Threshold**: `min(Double(duration) / 2.0, 240.0)`. Scrobbles at 50% or 4 minutes, whichever comes first.
-3. **One Scrobble Per Play**: `hasScrobbled` flag set to `true` upon dispatch; reset on loop or track change.
-4. **Playback Loop Detection**:
-   - Primary: If `lastPlayerPosition / duration > 0.6` and current `playerPosition / duration < 0.3`.
-   - Fallback: If `accumulatedPlayTime >= duration` and `hasScrobbled == true`.
-5. **Pause Deductions**:
-   - `accumulatedPlayTime` only accumulates when `wasPlaying == true`. It never accumulates while paused.
+1. Track duration must exceed 30 seconds. Threshold defaults to `min(duration / 2, 240)`; saved `half` and `fourMinutes` policies may wait longer.
+2. `PlaybackSession` credits only observed position advancement bounded by monotonic elapsed time. Never initialize listened time from player position or accumulate sleep/pause gaps.
+3. Persist the eligible event before submission. Preserve its per-play submitted flag across monitoring pauses and timer reconfiguration. Only actual end-to-start playback transitions establish a repeat; elapsed duration alone is not evidence.
+4. `ScrobbleMonitor` is main-actor isolated. Every AppleScript action goes through `pollQueue`; generation checks reject stale polls, artwork, now-playing and love results.
+5. Use full metadata identity (database ID, title, artist, album), never database ID or title alone. Artwork extraction verifies metadata atomically; remote fallback rejects unmatched/ambiguous releases.
+6. Accepted, ignored, pending, and failed outcomes remain distinct. Queue removals are by event ID, account-scoped, and atomic. Keychain migration must preserve legacy values on write failure.
 
 ## Skip Detection Pattern
 - Always register distributed notifications:
@@ -43,5 +41,5 @@ Use this skill when modifying or debugging the audio detection, state transition
 
 ## Threading Rules
 - **Never run AppleScript on the main thread.** Always dispatch on `pollQueue`.
-- Guard all shared mutable variables in `ScrobbleMonitor` with `withStateLock { ... }`.
+- Keep monitor state on `@MainActor`; cross to `pollQueue` only for detector operations and return immutable samples.
 - Always push UI updates (`currentPosition`, `isPlaying`, `scrobbleThresholdSeconds`) onto `DispatchQueue.main` or `@MainActor`.

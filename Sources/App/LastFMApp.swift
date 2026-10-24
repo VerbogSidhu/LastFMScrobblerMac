@@ -4,6 +4,7 @@ import AppKit
 @main
 struct LastFMApp: App {
     @StateObject private var appState = AppState()
+    @AppStorage("menu_bar_show_count") private var showCount = true
 
     init() {
         // Bound network and image caching in RAM to keep memory footprint lean
@@ -16,7 +17,7 @@ struct LastFMApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        Window("Last.fm", id: "dashboard") {
             ContentView()
                 .environmentObject(appState)
                 .preferredColorScheme(.dark)
@@ -30,6 +31,10 @@ struct LastFMApp: App {
             MenuBarPopoverContent(appState: appState)
         } label: {
             HStack(spacing: 5) {
+                if showCount {
+                    Text("\(appState.menuBarTodayCount)").monospacedDigit()
+                        .accessibilityLabel("Today: \(appState.menuBarTodayCount) scrobbles")
+                }
                 if appState.scrobbleMonitor.isScrobbling,
                    let track = appState.scrobbleMonitor.currentTrackName {
                     // Mini circular progress ring

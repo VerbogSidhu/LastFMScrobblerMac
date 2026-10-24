@@ -2,127 +2,137 @@ import SwiftUI
 
 struct AccountSettingsView: View {
     @EnvironmentObject var appState: AppState
-    @State private var username = ""
     @State private var apiKey = ""
     @State private var apiSecret = ""
     @State private var isAuthenticating = false
     @State private var showResetConfirmation = false
+    @State private var errorMessage: String?
+    @State private var authenticationTask: Task<Void, Never>?
+
+    private var connected: Bool { appState.scrobbleMonitor.authStatus == .authenticated }
+    private var validCredentials: Bool {
+        !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !apiSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
-            // Connection Status
             Card {
                 HStack(spacing: DS.Spacing.lg) {
-                    Circle()
-                        .fill(appState.scrobbleMonitor.authStatus == .authenticated
-                              ? DS.Colors.success
-                              : DS.Colors.error)
-                        .frame(width: 8, height: 8)
+                    StatusDot(isActive: connected)
                     VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                        Text(appState.scrobbleMonitor.authStatus == .authenticated
-                             ? "Connected to Last.fm"
-                             : "Not Connected")
+                        Text(connected ? "Connected to Last.fm" : isAuthenticating ? "Waiting for authorization…" : "Not Connected")
                             .font(DS.Fonts.bodyMedium(12))
-                            .foregroundStyle(DS.Colors.textPrimary)
-                        Text("Username: \(Constants.lastFMUsername.isEmpty ? "not set" : Constants.lastFMUsername)")
-                            .font(DS.Fonts.caption(11))
-                            .foregroundStyle(DS.Colors.textSecondary)
-                    }
-                    Spacer()
-                    if appState.scrobbleMonitor.authStatus == .authenticated {
-                        SecondaryButton(title: "Profile", icon: "arrow.up.right") {
-                            if let url = URL(string: "https://www.last.fm/user/\(Constants.lastFMUsername)") {
-                                NSWorkspace.shared.open(url)
-                            }
+                        if let name = CredentialStore.shared.username, connected {
+                            Text("@\(name)")
+                                .font(DS.Fonts.caption(11))
+                                .foregroundStyle(DS.Colors.textSecondary)
                         }
                     }
-                }
-            }
-
-            // Username
-            VStack(alignment: .leading, spacing: DS.Spacing.md) {
-                Text("Last.fm Username")
-                    .font(DS.Fonts.captionMedium(11))
-                    .foregroundStyle(DS.Colors.textSecondary)
-                TextField("your Last.fm username", text: $username)
-                    .inputStyle()
-                    .onChange(of: username) { newValue in
-                        Constants.setUsername(newValue.trimmingCharacters(in: .whitespaces))
+                    Spacer()
+                    if let name = CredentialStore.shared.username, connected,
+                       let url = URL(string: "https://www.last.fm/user/\(name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name)") {
+                        Link(destination: url) { Label("Profile", systemImage: "arrow.up.right") }
+                            .font(DS.Fonts.caption(11))
                     }
+                }
             }
 
-            // API Credentials
+            Text("The account you authorize in your browser is used for both your dashboard and scrobbles. Disconnect to switch accounts.")
+                .font(DS.Fonts.caption(11))
+                .foregroundStyle(DS.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             VStack(alignment: .leading, spacing: DS.Spacing.lg) {
-                Text("API Credentials")
-                    .font(DS.Fonts.subheading(13))
-
+                Text("API Credentials").font(DS.Fonts.subheading(13))
                 VStack(alignment: .leading, spacing: DS.Spacing.md) {
-                    Text("API Key")
-                        .font(DS.Fonts.captionMedium(11))
-                        .foregroundStyle(DS.Colors.textSecondary)
-                    TextField("API Key", text: $apiKey)
-                        .inputStyle()
+                    Text("API Key").font(DS.Fonts.captionMedium(11))
+                    TextField("API Key", text: $apiKey).inputStyle()
+                        .accessibilityLabel("Last.fm API key")
                 }
-
                 VStack(alignment: .leading, spacing: DS.Spacing.md) {
-                    Text("API Secret")
-                        .font(DS.Fonts.captionMedium(11))
-                        .foregroundStyle(DS.Colors.textSecondary)
-                    SecureField("API Secret", text: $apiSecret)
-                        .inputStyle()
+                    Text("API Secret").font(DS.Fonts.captionMedium(11))
+                    SecureField("API Secret", text: $apiSecret).inputStyle()
+                        .accessibilityLabel("Last.fm API secret")
                 }
-
-                Text("Register your app at last.fm/api/account/create to get an API key and secret.")
+                Link("Get an API key and secret from Last.fm", destination: URL(string: "https://www.last.fm/api/account/create")!)
+                    .font(DS.Fonts.caption(11))
+                Text("Your secret and session are stored securely in macOS Keychain.")
                     .font(DS.Fonts.caption(10))
-                    .foregroundStyle(DS.Colors.textMuted)
+                    .foregroundStyle(DS.Colors.textSecondary)
+            }
+            .disabled(connected || isAuthenticating)
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle")
+                    .font(DS.Fonts.caption(11))
+                    .foregroundStyle(DS.Colors.error)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            // Actions
-            if appState.scrobbleMonitor.authStatus == .authenticated {
+            if connected {
                 VStack(alignment: .leading, spacing: DS.Spacing.md) {
                     DestructiveButton(title: "Disconnect", icon: "link.circle.fill") {
+                        authenticationTask?.cancel()
                         appState.scrobbleMonitor.disconnect()
+                        loadCredentials()
                     }
                     DestructiveButton(title: "Reset & Re-authorize", icon: "arrow.counterclockwise") {
                         showResetConfirmation = true
                     }
                 }
-            } else if !apiSecret.isEmpty {
-                PrimaryButton(
-                    title: "Connect to Last.fm",
-                    icon: "link",
-                    isLoading: isAuthenticating
-                ) {
-                    isAuthenticating = true
-                    appState.scrobbleMonitor.saveCredentials(apiKey: apiKey, apiSecret: apiSecret)
-                    Task {
-                        await appState.scrobbleMonitor.authenticate()
-                        await MainActor.run {
-                            isAuthenticating = false
-                            if appState.scrobbleMonitor.authStatus == .authenticated {
-                                appState.scrobbleMonitor.startMonitoring()
-                            }
-                        }
-                    }
+            } else {
+                PrimaryButton(title: "Connect to Last.fm", icon: "link", isLoading: isAuthenticating) {
+                    connect()
                 }
+                .disabled(!validCredentials)
             }
-
-            Spacer()
         }
-        .onAppear {
-            username = UserDefaults.standard.string(forKey: "lastfm_username") ?? ""
-            apiKey = UserDefaults.standard.string(forKey: "lastfm_api_key") ?? ""
-            apiSecret = UserDefaults.standard.string(forKey: "lastfm_api_secret") ?? ""
-        }
+        .onAppear { loadCredentials() }
+        .onDisappear { authenticationTask?.cancel() }
         .alert("Reset All Credentials?", isPresented: $showResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) {
+                authenticationTask?.cancel()
                 appState.scrobbleMonitor.resetCredentials()
-                apiKey = ""
-                apiSecret = ""
+                loadCredentials()
             }
         } message: {
-            Text("This will remove your API key, secret, and session. You'll need to re-authorize with Last.fm.")
+            Text("This removes the saved API credentials and session. Your listening history is kept, and setup will guide you through reconnecting.")
+        }
+    }
+
+    private func loadCredentials() {
+        do {
+            try CredentialStore.shared.migrateLegacyDefaults()
+            apiKey = CredentialStore.shared.apiKey
+            apiSecret = CredentialStore.shared.apiSecret
+            errorMessage = nil
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func connect() {
+        errorMessage = nil
+        do {
+            try CredentialStore.shared.saveCredentials(apiKey: apiKey, apiSecret: apiSecret)
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+        appState.scrobbleMonitor.setup()
+        isAuthenticating = true
+        authenticationTask?.cancel()
+        authenticationTask = Task { @MainActor in
+            await appState.scrobbleMonitor.authenticate()
+            guard !Task.isCancelled else { isAuthenticating = false; return }
+            isAuthenticating = false
+            if connected {
+                UserDefaults.standard.set(true, forKey: "lastfm_setup_complete")
+                appState.scrobbleMonitor.startMonitoring()
+                appState.loadAll()
+            } else {
+                errorMessage = appState.scrobbleMonitor.lastError ?? "Authorization did not finish. Approve the request in your browser and try again."
+            }
         }
     }
 }

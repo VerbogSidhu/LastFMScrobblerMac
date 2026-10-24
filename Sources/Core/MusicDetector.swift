@@ -1,8 +1,9 @@
 import Foundation
 import AppKit
+import CryptoKit
 
 /// Detects what's currently playing in Apple Music via AppleScript.
-struct MusicTrackInfo {
+struct MusicTrackInfo: Sendable {
     let name: String
     let artist: String
     let album: String
@@ -12,7 +13,10 @@ struct MusicTrackInfo {
     let databaseID: Int
 }
 
-class MusicDetector {
+// The monitor confines every detector operation to its serial poll queue.
+final class MusicDetector: @unchecked Sendable {
+    private(set) var lastError: String?
+
     
     /// Zero-cost in-memory kernel check if Apple Music process is currently alive.
     /// Bypasses all Apple Events and AppleScript engine overhead.
@@ -33,93 +37,94 @@ class MusicDetector {
                 end if
                 
                 set t to current track
-                set trackId to database ID of t
+                set trackId to 0
+                try
+                    set trackId to database ID of t
+                end try
                 set trackName to name of t
                 set artistName to artist of t
                 set albumName to album of t
                 set trackDuration to duration of t
                 set pos to player position
                 
-                return (trackId as string) & "|||" & trackName & "|||" & artistName & "|||" & albumName & "|||" & (trackDuration as string) & "|||" & (pos as string) & "|||" & playerState
-            on error
-                return "ERROR"
+                return {trackId, trackName, artistName, albumName, trackDuration, pos, playerState}
+            on error errorMessage number errorNumber
+                return {"ERROR", errorNumber, errorMessage}
             end try
         end tell
         """)
     
-    /// Check if Apple Music is running and get current track info.
+    /// Called only on the monitor's serial AppleScript queue.
     func getCurrentTrack() -> MusicTrackInfo? {
-        // Fast-path: If Apple Music isn't open, exit immediately with 0% CPU
+        lastError = nil
         guard isMusicRunning() else { return nil }
-        guard let scriptObject = currentTrackScript else { return nil }
-        
+        guard let scriptObject = currentTrackScript else {
+            lastError = "The Apple Music detection script could not be loaded."
+            return nil
+        }
         var error: NSDictionary?
         let result = scriptObject.executeAndReturnError(&error)
-        
-        if let error = error {
-            NSLog("[MusicDetector] AppleScript error: %@", "\(error)")
+        if let error {
+            let code = error[NSAppleScript.errorNumber] as? Int
+            lastError = code == -1743
+                ? "Allow Last.fm to control Music in System Settings → Privacy & Security → Automation."
+                : "Apple Music could not be read. Try reopening Music."
             return nil
         }
-        
-        guard let stringValue = result.stringValue else { return nil }
-        
-        if stringValue == "STOPPED" || stringValue == "ERROR" {
+        if result.atIndex(1)?.stringValue == "ERROR" {
+            let code = result.atIndex(2)?.int32Value ?? 0
+            lastError = code == -1743
+                ? "Allow Last.fm to control Music in System Settings → Privacy & Security → Automation."
+                : "Apple Music could not provide track details."
             return nil
         }
-        
-        let components = stringValue.components(separatedBy: "|||")
-        guard components.count >= 7 else { return nil }
-        
-        // Duration from AppleScript is a float (e.g. "151.593994140625")
-        // Int("151.593...") fails — must parse as Double first
+        guard result.numberOfItems == 7 else { return nil }
         return MusicTrackInfo(
-            name: components[1],
-            artist: components[2],
-            album: components[3],
-            duration: Int(Double(components[4]) ?? 0),
-            playerPosition: Int(Double(components[5]) ?? 0),
-            playerState: components[6],
-            databaseID: Int(components[0]) ?? 0
+            name: result.atIndex(2)?.stringValue ?? "",
+            artist: result.atIndex(3)?.stringValue ?? "",
+            album: result.atIndex(4)?.stringValue ?? "",
+            duration: Int(result.atIndex(5)?.doubleValue ?? 0),
+            playerPosition: Int(result.atIndex(6)?.doubleValue ?? 0),
+            playerState: result.atIndex(7)?.stringValue ?? "stopped",
+            databaseID: Int(result.atIndex(1)?.int32Value ?? 0)
         )
     }
 
-    /// Extract album artwork from Apple Music for the current track and write to disk.
-    func getArtwork(databaseID: Int) -> String? {
-        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
-        let dir = appSupport.appendingPathComponent("LastFM/Artwork", isDirectory: true)
+    /// The current track is verified in the same Apple Event that extracts its
+    /// bytes. Cache identity includes metadata; old ID-only cache files are ignored.
+    func getArtwork(for track: MusicTrackInfo) -> String? {
+        guard isMusicRunning(), let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        let dir = support.appendingPathComponent("LastFM/Artwork", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let filePath = dir.appendingPathComponent("art_\(databaseID).jpg").path
-
-        if FileManager.default.fileExists(atPath: filePath) {
-            return "file://" + filePath
-        }
-
+        let identity = [String(track.databaseID), track.name, track.artist, track.album]
+        let data = (try? JSONEncoder().encode(identity)) ?? Data()
+        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let file = dir.appendingPathComponent("art-v2-\(hash).jpg")
+        if FileManager.default.fileExists(atPath: file.path), NSImage(contentsOf: file) != nil { return file.absoluteString }
+        let temporary = dir.appendingPathComponent("\(UUID().uuidString).tmp")
+        defer { try? FileManager.default.removeItem(at: temporary) }
         let scriptText = """
-            set artFile to POSIX file "\(filePath)"
             tell application "Music"
                 try
-                    if player state is not stopped then
-                        set t to current track
-                        set arts to artworks of t
-                        if (count of arts) > 0 then
-                            set rawData to raw data of (item 1 of arts)
-                        else
-                            return "NONE"
-                        end if
-                    else
-                        return "NONE"
-                    end if
+                    if player state is stopped then return "NONE"
+                    set t to current track
+                    if (name of t as string) is not "\(scriptEscape(track.name))" then return "NONE"
+                    if (artist of t as string) is not "\(scriptEscape(track.artist))" then return "NONE"
+                    if (album of t as string) is not "\(scriptEscape(track.album))" then return "NONE"
+                    set arts to artworks of t
+                    if (count of arts) is 0 then return "NONE"
+                    set rawData to raw data of (item 1 of arts)
                 on error
                     return "NONE"
                 end try
             end tell
-
+            set artFile to POSIX file "\(scriptEscape(temporary.path))"
             try
                 set outFile to open for access artFile with write permission
                 set eof outFile to 0
                 write rawData to outFile
                 close access outFile
-                return "\(filePath)"
+                return "OK"
             on error
                 try
                     close access artFile
@@ -127,16 +132,23 @@ class MusicDetector {
                 return "NONE"
             end try
             """
-
         var error: NSDictionary?
-        let script = NSAppleScript(source: scriptText)
-        let result = script?.executeAndReturnError(&error)
-        if let res = result?.stringValue, res != "NONE" && !res.isEmpty {
-            return "file://" + res
-        }
-        return nil
+        guard NSAppleScript(source: scriptText)?.executeAndReturnError(&error).stringValue == "OK",
+              error == nil, NSImage(contentsOf: temporary) != nil else { return nil }
+        do {
+            try? FileManager.default.removeItem(at: file)
+            try FileManager.default.moveItem(at: temporary, to: file)
+            return file.absoluteString
+        } catch { return nil }
     }
-    
+
+    private func scriptEscape(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+    }
+
     /// Check if Apple Music is installed on this Mac using native Cocoa URL lookup.
     func isAppleMusicInstalled() -> Bool {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Music") != nil
