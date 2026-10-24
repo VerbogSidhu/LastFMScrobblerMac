@@ -3,6 +3,7 @@ import AppKit
 
 struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    @AppStorage("lastfm_setup_complete") private var setupComplete = false
 
     var body: some View {
         ZStack {
@@ -36,6 +37,9 @@ struct ContentView: View {
             )
             .environmentObject(appState)
         }
+        .sheet(isPresented: Binding(get: { !setupComplete }, set: { if !$0 { setupComplete = true } })) {
+            SetupWizardView().environmentObject(appState).interactiveDismissDisabled()
+        }
         // Global Keyboard Shortcuts
         .background(
             Group {
@@ -50,8 +54,7 @@ struct ContentView: View {
                 .keyboardShortcut("n", modifiers: [.command])
 
                 Button("") {
-                    appState.refreshRecentTracks()
-                    appState.refreshTab(appState.selectedTab)
+                    appState.loadAll()
                     NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
                 }
                 .keyboardShortcut("r", modifiers: [.command])
@@ -70,15 +73,7 @@ struct ContentView: View {
             .opacity(0)
             .allowsHitTesting(false)
         )
-        .onAppear {
-            appState.loadAll()
-            appState.scrobbleMonitor.setup()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                if appState.scrobbleMonitor.authStatus == .authenticated {
-                    appState.scrobbleMonitor.startMonitoring()
-                }
-            }
-        }
+        .onAppear { appState.startup() }
     }
 }
 

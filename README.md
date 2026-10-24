@@ -29,7 +29,7 @@ Register an app at [last.fm/api/account/create](https://www.last.fm/api/account/
 
 ```bash
 cd LastFMSwift
-swift build
+./scripts/build-app.sh
 ```
 
 Or open in Xcode and hit Build.
@@ -38,13 +38,15 @@ Or open in Xcode and hit Build.
 
 1. Open the app
 2. Click the gear icon in the sidebar
-3. Enter your Last.fm username, API key, and API secret
+3. Enter your Last.fm API key and API secret (the authorized account supplies your username)
 4. Click "Connect to Last.fm" and authorize in the browser window
 5. The scrobbler starts automatically once connected
 
 ### 4. Install
 
-Copy `LastFM.app` from `.build/debug/` to `/Applications/`.
+Run `./scripts/build-app.sh`, then copy `.build/LastFM.app` to `/Applications/`. This creates the app bundle with its Automation permission description; `swift build` alone produces only an executable.
+
+On first playback detection, allow Last.fm to control Apple Music. If permission was denied, open System Settings → Privacy & Security → Automation and enable Apple Music for Last.fm. Credentials are migrated to macOS Keychain on launch. Pending offline plays remain on disk and are retried only for their authenticated account.
 
 ## How Scrobbling Works
 
@@ -67,3 +69,7 @@ Sources/
 ## License
 
 MIT
+
+## Regression checks
+
+Run `./scripts/test.sh` for the Swift Testing suite. It uses isolated fixtures and never submits real scrobbles or clears personal history. On Command Line Tools installations it supplies the bundled Testing framework path automatically.

@@ -56,6 +56,7 @@ final class ScrobbleMonitor: ObservableObject {
     private var nextFlush = Date.distantPast
     private var flushFailures = 0
     private var lastNowPlayingAttempt = Date.distantPast
+    private var nextArtworkAttempt = Date.distantPast
     private var busyLoving = false
     private var identityTask: Task<Void, Never>?
     private var identityVerified = false
@@ -98,6 +99,7 @@ final class ScrobbleMonitor: ObservableObject {
     }
 
     func saveCredentials(apiKey: String, apiSecret: String) {
+        authorizationGeneration = UUID()
         do {
             let oldKey = credentials.apiKey
             try credentials.saveCredentials(apiKey: apiKey, apiSecret: apiSecret)
@@ -252,6 +254,7 @@ final class ScrobbleMonitor: ObservableObject {
             trackGeneration = UUID(); pendingCurrentID = nil
             nowPlayingTask?.cancel(); artworkTask?.cancel()
             currentAlbumArt = nil; isLoved = false; justScrobbled = false
+            nextArtworkAttempt = .distantPast
             lastNowPlayingAttempt = .distantPast
             requestArtwork(info)
             NotificationCenter.default.post(name: .trackDidChange, object: nil)
@@ -262,6 +265,7 @@ final class ScrobbleMonitor: ObservableObject {
         update(\.scrobbleThresholdSeconds, threshold(for: info.duration))
         update(\.isPlaying, info.playerState == "playing"); update(\.isPaused, info.playerState == "paused")
         if !isPlaying { nowPlayingTask?.cancel() }
+        if currentAlbumArt == nil, artworkTask == nil, now >= nextArtworkAttempt { requestArtwork(info) }
         if isPlaying && now.timeIntervalSince(lastNowPlayingAttempt) >= validPreference("scrobble_nowplaying_refresh", range: 30...300, fallback: 60) {
             lastNowPlayingAttempt = now
             sendNowPlaying(info)
@@ -285,6 +289,12 @@ final class ScrobbleMonitor: ObservableObject {
         let monitoring = monitorGeneration
         let detector = detector
         artworkTask = Task {
+            defer {
+                if token == trackGeneration, monitoring == monitorGeneration {
+                    artworkTask = nil
+                    nextArtworkAttempt = Date().addingTimeInterval(15)
+                }
+            }
             let local: String? = await withCheckedContinuation { continuation in
                 pollQueue.async { continuation.resume(returning: detector.getArtwork(for: info)) }
             }
@@ -374,6 +384,7 @@ final class ScrobbleMonitor: ObservableObject {
                     lastError = nil
                     NotificationCenter.default.post(name: .scrobbleDidComplete, object: nil)
                 } catch {
+                    guard !Task.isCancelled else { return }
                     handle(error)
                     if let failure = error as? ScrobbleError, !failure.isRetryable, !failure.isAuthenticationError {
                         // An explicit rejection is final, never a successful local scrobble.

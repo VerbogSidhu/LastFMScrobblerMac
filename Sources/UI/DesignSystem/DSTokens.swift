@@ -42,9 +42,9 @@ enum DS {
 
         // Text
         static let textPrimary = Color.white
-        static let textSecondary = Color.white.opacity(0.6)
-        static let textTertiary = Color.white.opacity(0.4)
-        static let textMuted = Color.white.opacity(0.3)
+        static let textSecondary = Color.white.opacity(0.8)
+        static let textTertiary = Color.white.opacity(0.65)
+        static let textMuted = Color.white.opacity(0.6)
 
         // Status
         static let statusActive = Color.green

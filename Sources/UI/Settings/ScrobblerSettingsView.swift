@@ -12,9 +12,15 @@ struct ScrobblerSettingsView: View {
         case halfOrFourMin = "Half duration or 4 min"
         case halfOnly = "Half duration only"
         case fourMinOnly = "4 minutes only"
-        case custom = "Custom"
 
         var id: String { rawValue }
+        var preference: String {
+            switch self {
+            case .halfOrFourMin: return "standard"
+            case .halfOnly: return "half"
+            case .fourMinOnly: return "fourMinutes"
+            }
+        }
     }
 
     var body: some View {
@@ -36,9 +42,9 @@ struct ScrobblerSettingsView: View {
                                     .font(DS.Fonts.mono(12))
                                     .foregroundStyle(DS.Colors.accent)
                             }
-                            Slider(value: $minDuration, in: 10...120, step: 5)
+                            Slider(value: $minDuration, in: 30...120, step: 5)
                                 .tint(DS.Colors.accent)
-                            Text("Tracks shorter than this are never scrobbled.")
+                            Text("Tracks must be longer than this. Last.fm requires more than 30 seconds.")
                                 .font(DS.Fonts.caption(10))
                                 .foregroundStyle(DS.Colors.textMuted)
                         }
@@ -56,7 +62,7 @@ struct ScrobblerSettingsView: View {
                                 }
                             }
                             .pickerStyle(.radioGroup)
-                            Text("When to count a play as a scrobble.")
+                            Text("The default follows Last.fm’s rules. Other options wait longer before submitting.")
                                 .font(DS.Fonts.caption(10))
                                 .foregroundStyle(DS.Colors.textMuted)
                         }
@@ -112,15 +118,21 @@ struct ScrobblerSettingsView: View {
             Spacer()
         }
         .onAppear {
-            minDuration = UserDefaults.standard.double(forKey: "scrobble_min_duration").clamped(to: 10...120, default: 30)
+            let saved = UserDefaults.standard.string(forKey: "scrobble_threshold") ?? "standard"
+            scrobbleThreshold = ScrobbleThreshold.allCases.first { $0.preference == saved } ?? .halfOrFourMin
+            minDuration = UserDefaults.standard.double(forKey: "scrobble_min_duration").clamped(to: 30...120, default: 30)
             pollInterval = UserDefaults.standard.double(forKey: "scrobble_poll_interval").clamped(to: 2...15, default: 5)
             nowPlayingRefresh = UserDefaults.standard.double(forKey: "scrobble_nowplaying_refresh").clamped(to: 30...300, default: 60)
+        }
+        .onChange(of: scrobbleThreshold) { value in
+            UserDefaults.standard.set(value.preference, forKey: "scrobble_threshold")
         }
         .onChange(of: minDuration) { newValue in
             UserDefaults.standard.set(newValue, forKey: "scrobble_min_duration")
         }
         .onChange(of: pollInterval) { newValue in
             UserDefaults.standard.set(newValue, forKey: "scrobble_poll_interval")
+            appState.scrobbleMonitor.reconfigurePolling()
         }
         .onChange(of: nowPlayingRefresh) { newValue in
             UserDefaults.standard.set(newValue, forKey: "scrobble_nowplaying_refresh")

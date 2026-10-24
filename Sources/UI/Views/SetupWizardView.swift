@@ -5,11 +5,11 @@ import SwiftUI
 struct SetupWizardView: View {
     @EnvironmentObject var appState: AppState
     @State private var step: Step = .credentials
-    @State private var username = ""
     @State private var apiKey = ""
     @State private var apiSecret = ""
     @State private var errorMessage: String?
     @State private var isProcessing = false
+    @State private var authorizationTask: Task<Void, Never>?
     
     enum Step {
         case credentials
@@ -42,6 +42,7 @@ struct SetupWizardView: View {
         }
         .frame(width: 480, height: 520)
         .background(.ultraThinMaterial)
+        .onDisappear { authorizationTask?.cancel() }
     }
     
     // MARK: - Step Dots
@@ -84,26 +85,6 @@ struct SetupWizardView: View {
             }
             
             VStack(alignment: .leading, spacing: DS.Spacing.lg) {
-                Text("Your Details")
-                    .font(DS.Fonts.subheading())
-                    .foregroundStyle(DS.Colors.textPrimary)
-                
-                VStack(alignment: .leading, spacing: DS.Spacing.md) {
-                    Text("Last.fm Username")
-                        .font(DS.Fonts.captionMedium(11))
-                        .foregroundStyle(DS.Colors.textSecondary)
-                    TextField("your Last.fm username", text: $username)
-                        .textFieldStyle(.plain)
-                        .padding(DS.Spacing.md)
-                        .background(DS.Colors.inputBackground, in: RoundedRectangle(cornerRadius: DS.Radius.sm))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: DS.Radius.sm)
-                                .stroke(DS.Colors.inputBorder, lineWidth: 1)
-                        )
-                }
-            }
-            
-            VStack(alignment: .leading, spacing: DS.Spacing.lg) {
                 Text("API Credentials")
                     .font(DS.Fonts.subheading())
                     .foregroundStyle(DS.Colors.textPrimary)
@@ -140,7 +121,7 @@ struct SetupWizardView: View {
                     Image(systemName: "info.circle")
                         .font(.system(size: 10))
                         .foregroundStyle(DS.Colors.textMuted)
-                    Text("Register your app at last.fm/api/account/create to get these.")
+                    Link("Get API credentials from Last.fm", destination: URL(string: "https://www.last.fm/api/account/create")!)
                         .font(DS.Fonts.caption(10))
                         .foregroundStyle(DS.Colors.textMuted)
                 }
@@ -167,10 +148,6 @@ struct SetupWizardView: View {
                     isLoading: false
                 ) {
                     errorMessage = nil
-                    guard !username.trimmingCharacters(in: .whitespaces).isEmpty else {
-                        errorMessage = "Please enter your Last.fm username."
-                        return
-                    }
                     guard !apiKey.trimmingCharacters(in: .whitespaces).isEmpty else {
                         errorMessage = "Please enter your API key."
                         return
@@ -180,14 +157,14 @@ struct SetupWizardView: View {
                         return
                     }
                     // Save username and credentials, then move to authorization
-                    Constants.setUsername(username.trimmingCharacters(in: .whitespaces))
+                    // The authenticated account name is supplied by Last.fm, not this display hint.
                     appState.scrobbleMonitor.saveCredentials(
                         apiKey: apiKey.trimmingCharacters(in: .whitespaces),
                         apiSecret: apiSecret.trimmingCharacters(in: .whitespaces)
                     )
                     step = .authorize
                 }
-                .disabled(username.trimmingCharacters(in: .whitespaces).isEmpty || apiKey.trimmingCharacters(in: .whitespaces).isEmpty || apiSecret.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(apiKey.trimmingCharacters(in: .whitespaces).isEmpty || apiSecret.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
         .padding(DS.Spacing.xxxl)
@@ -270,6 +247,8 @@ struct SetupWizardView: View {
             // Actions
             HStack {
                 SecondaryButton(title: "Back", icon: "arrow.left") {
+                    authorizationTask?.cancel()
+                    isProcessing = false
                     step = .credentials
                 }
                 
@@ -287,12 +266,13 @@ struct SetupWizardView: View {
                     ) {
                         errorMessage = nil
                         isProcessing = true
-                        Task {
+                        authorizationTask?.cancel()
+                        authorizationTask = Task {
                             await appState.scrobbleMonitor.authenticate()
                             await MainActor.run {
                                 isProcessing = false
                                 if appState.scrobbleMonitor.authStatus != .authenticated {
-                                    errorMessage = "Authorization timed out. Make sure you approved the request in your browser, then try again."
+                                    errorMessage = appState.scrobbleMonitor.lastError ?? "Authorization did not finish. Check your connection and approve the request in your browser, then try again."
                                 }
                             }
                         }
@@ -343,6 +323,7 @@ struct SetupWizardView: View {
                     UserDefaults.standard.set(true, forKey: "lastfm_setup_complete")
                     // Start the monitor
                     appState.scrobbleMonitor.startMonitoring()
+                    NotificationCenter.default.post(name: .accountDidChange, object: nil)
                     // Load dashboard data
                     appState.loadAll()
                 }

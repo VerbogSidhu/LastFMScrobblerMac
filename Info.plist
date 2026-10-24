@@ -19,6 +19,8 @@
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Last.fm reads the current Apple Music track and controls playback so your listening can be scrobbled.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSSupportsAutomaticTermination</key>

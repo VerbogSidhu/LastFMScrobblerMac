@@ -327,7 +327,9 @@ struct NowPlayingHeroView: View {
 
     @ViewBuilder
     private var statusBadge: some View {
-        if monitor.hasCurrentTrackScrobbled {
+        if !monitor.isPlaying {
+            Text("Playback paused").font(DS.Fonts.caption(11)).foregroundStyle(DS.Colors.textSecondary)
+        } else if monitor.hasCurrentTrackScrobbled {
             HStack(spacing: 4) {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 9))

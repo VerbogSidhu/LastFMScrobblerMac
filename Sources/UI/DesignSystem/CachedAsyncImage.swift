@@ -15,8 +15,7 @@ struct CachedAsyncImage<Placeholder: View, Content: View>: View {
 
     var body: some View {
         Group {
-            if loader.source == urlString, let file = loader.fileURL,
-               let image = NSImage(contentsOf: file) {
+            if loader.source == urlString, let image = loader.image {
                 content(Image(nsImage: image))
             } else { placeholder() }
         }

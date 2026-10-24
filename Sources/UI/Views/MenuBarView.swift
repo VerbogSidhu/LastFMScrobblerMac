@@ -1,290 +1,184 @@
 import SwiftUI
 
-/// Menu bar extra showing now-playing info, scrobble count, and quick actions.
 struct MenuBarPopoverContent: View {
     @ObservedObject var appState: AppState
-    @State private var loveError: String?
-
+    @Environment(\.openWindow) private var openWindow
     private var monitor: ScrobbleMonitor { appState.scrobbleMonitor }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack {
+        VStack(spacing: 10) {
+            HStack(spacing: 9) {
                 Image(systemName: "waveform.circle.fill")
-                    .font(DS.Fonts.body(16))
-                    .foregroundStyle(DS.Colors.accent)
-                Text("Last.fm Scrobbler")
-                    .font(DS.Fonts.body(13).weight(.semibold))
+                    .font(.system(size: 25)).foregroundStyle(appState.accentColor)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Last.fm").font(DS.Fonts.subheading(14))
+                    Text(monitor.authenticatedUsername.map { "@\($0)" } ?? "Your listening companion")
+                        .font(DS.Fonts.caption(11)).foregroundStyle(DS.Colors.textSecondary)
+                }
                 Spacer()
+                Button {
+                    openDashboard()
+                    appState.showSettings = true
+                } label: {
+                    Image(systemName: "gearshape").frame(width: 30, height: 30)
+                        .background(.white.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain).help("Settings").accessibilityLabel("Settings")
             }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Last.fm Scrobbler Menu")
+            .padding(.horizontal, 5).padding(.top, 3)
 
-            Divider()
+            player
+                .padding(14)
+                .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 20).strokeBorder(.white.opacity(0.07)))
 
-            // Now Playing
-            if monitor.isScrobbling, let track = monitor.currentTrackName, let artist = monitor.currentArtist {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 4) {
-                        StatusDot(isActive: monitor.isPlaying, size: 6)
-                        Text(monitor.isPlaying ? "Now Playing" : "Paused")
-                            .font(DS.Fonts.caption(10).weight(.medium))
-                            .foregroundStyle(monitor.isPlaying ? DS.Colors.success : DS.Colors.textMuted)
-
-                        Spacer()
-
-                        // Scrobble progress status
-                        if monitor.hasCurrentTrackScrobbled {
-                            HStack(spacing: 3) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 8))
-                                Text("Scrobbled")
-                                    .font(DS.Fonts.caption(9).weight(.semibold))
-                            }
-                            .foregroundStyle(DS.Colors.success)
-                        } else if monitor.scrobbleThresholdSeconds > 0 {
-                            let rem = max(0, Int(monitor.scrobbleThresholdSeconds - monitor.accumulatedSeconds))
-                            Text(rem == 0 ? "Scrobbling soon" : "Scrobbles in \(rem)s")
-                                .font(DS.Fonts.caption(9))
-                                .foregroundStyle(DS.Colors.textMuted)
-                        }
-                    }
-
-                    HStack(spacing: 10) {
-                        if let art = monitor.currentAlbumArt {
-                            MediaImage(url: art, placeholder: "music.note", size: 36, cornerRadius: 6)
-                        } else {
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(appState.accentColor.opacity(0.15))
-                                .frame(width: 36, height: 36)
-                                .overlay(
-                                    Image(systemName: "music.note")
-                                        .font(.system(size: 14))
-                                        .foregroundStyle(appState.accentColor)
-                                )
-                        }
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(track)
-                                .font(DS.Fonts.body(12).weight(.semibold))
-                                .lineLimit(1)
-                            Text(artist)
-                                .font(DS.Fonts.caption(11))
-                                .foregroundStyle(DS.Colors.textSecondary)
-                                .lineLimit(1)
-                        }
-                    }
-
-                    // Progress bar
-                    if monitor.currentDuration > 0 {
-                        GeometryReader { geo in
-                            let progress = min(1.0, Double(monitor.currentPosition) / Double(monitor.currentDuration))
-                            ZStack(alignment: .leading) {
-                                Capsule()
-                                    .fill(Color.white.opacity(0.08))
-                                    .frame(height: 3)
-                                Capsule()
-                                    .fill(appState.accentColor.gradient)
-                                    .frame(width: geo.size.width * CGFloat(progress), height: 3)
-                            }
-                        }
-                        .frame(height: 3)
-                    }
-
-                    // Playback Controls Row
-                    HStack(spacing: 10) {
-                        Button {
-                            monitor.previousTrack()
-                        } label: {
-                            Image(systemName: "backward.fill")
-                                .font(.system(size: 10))
-                                .foregroundStyle(DS.Colors.textPrimary)
-                                .frame(width: 24, height: 24)
-                                .background(Color.white.opacity(0.06), in: Circle())
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            monitor.togglePlayPause()
-                        } label: {
-                            Image(systemName: monitor.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(DS.Colors.textPrimary)
-                                .frame(width: 28, height: 28)
-                                .background(Color.white.opacity(0.12), in: Circle())
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            monitor.nextTrack()
-                        } label: {
-                            Image(systemName: "forward.fill")
-                                .font(.system(size: 10))
-                                .foregroundStyle(DS.Colors.textPrimary)
-                                .frame(width: 24, height: 24)
-                                .background(Color.white.opacity(0.06), in: Circle())
-                        }
-                        .buttonStyle(.plain)
-
-                        Spacer()
-
-                        // Love button
-                        Button {
-                            monitor.toggleLoveCurrentTrack()
-                        } label: {
-                            HStack(spacing: 3) {
-                                Image(systemName: monitor.isLoved ? "heart.fill" : "heart")
-                                    .foregroundStyle(monitor.isLoved ? DS.Colors.love : DS.Colors.textSecondary)
-                                Text(monitor.isLoved ? "Loved" : "Love")
-                            }
-                            .font(DS.Fonts.caption(10))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(monitor.isLoved ? DS.Colors.love.opacity(0.15) : Color.white.opacity(0.06), in: Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .padding(.top, 2)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Now playing: \(track) by \(artist)")
-
-            } else if monitor.isScrobbling {
-                HStack(spacing: 4) {
-                    StatusDot(isActive: true, size: 6)
-                    Text("Scrobbling — waiting for track…")
-                        .font(DS.Fonts.caption(11))
-                        .foregroundStyle(DS.Colors.textSecondary)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-
-            } else {
-                HStack(spacing: 4) {
-                    StatusDot(isActive: false, size: 6)
-                    Text("Scrobbler off")
-                        .font(DS.Fonts.caption(11))
-                        .foregroundStyle(DS.Colors.textSecondary)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+            if let error = monitor.lastError {
+                Label(error, systemImage: "exclamationmark.circle")
+                    .font(DS.Fonts.caption(11)).foregroundStyle(DS.Colors.warning)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 5)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
-            // Offline queue notification
             if monitor.queuedScrobbleCount > 0 {
-                Divider()
-                HStack(spacing: 5) {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 9))
-                    Text("\(monitor.queuedScrobbleCount) queued offline")
-                        .font(DS.Fonts.caption(10))
+                Label("\(monitor.queuedScrobbleCount) waiting to sync", systemImage: "arrow.triangle.2.circlepath")
+                    .font(DS.Fonts.caption(11)).foregroundStyle(DS.Colors.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 5)
+            }
+
+            HStack(spacing: 0) {
+                StatPill(value: "\(appState.menuBarTodayCount)", label: "Today")
+                StatPill(value: "\(appState.menuBarWeekCount)", label: "This Week")
+                StatPill(value: "\(appState.menuBarMonthCount)", label: "This Month")
+            }
+            .padding(.vertical, 12)
+            .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+
+            VStack(spacing: 2) {
+                MenuActionRow(title: "Open Dashboard", icon: "macwindow", trailing: "↗", action: openDashboard)
+                if monitor.authStatus == .authenticated {
+                    MenuActionRow(title: monitor.isScrobbling ? "Pause Scrobbler" : "Resume Scrobbler",
+                                  icon: monitor.isScrobbling ? "pause.circle" : "play.circle") {
+                        if monitor.isScrobbling { monitor.stopMonitoring() }
+                        else { monitor.startMonitoring() }
+                    }
+                } else {
+                    MenuActionRow(title: "Connect to Last.fm", icon: "link") {
+                        openDashboard(); appState.showSettings = true
+                    }
                 }
-                .foregroundStyle(DS.Colors.warning)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-            }
-
-            Divider()
-
-            // Stats Summary
-            HStack(spacing: DS.Spacing.xl) {
-                StatPill(value: "\(appState.menuBarTodayCount)", label: "7 Days")
-                StatPill(value: "\(appState.menuBarWeekCount)", label: "Month")
-                StatPill(value: "\(appState.menuBarMonthCount)", label: "3 Months")
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-
-            Divider()
-
-            // Actions
-            Button {
-                NSApp.activate(ignoringOtherApps: true)
-                if let window = NSApp.windows.first(where: { $0.title.contains("Last") }) {
-                    window.makeKeyAndOrderFront(nil)
+                MenuActionRow(title: "Quit Last.fm", icon: "power", trailing: "⌘Q") {
+                    NSApplication.shared.terminate(nil)
                 }
-            } label: {
-                Label("Open Dashboard", systemImage: "arrow.up.left.and.arrow.down.right")
-                    .font(DS.Fonts.body(12))
             }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .accessibilityLabel("Open main dashboard")
-
-            if monitor.isScrobbling {
-                Button {
-                    monitor.stopMonitoring()
-                } label: {
-                    Label("Pause Scrobbler", systemImage: "pause.circle")
-                        .font(DS.Fonts.body(12))
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .accessibilityLabel("Pause scrobbler")
-
-            } else if monitor.authStatus == .authenticated {
-                Button {
-                    monitor.startMonitoring()
-                } label: {
-                    Label("Resume Scrobbler", systemImage: "play.circle")
-                        .font(DS.Fonts.body(12))
-                }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .accessibilityLabel("Resume scrobbler")
-            }
-
-            Divider()
-
-            Button { NSApplication.shared.terminate(nil) } label: {
-                Label("Quit", systemImage: "power")
-                    .font(DS.Fonts.body(12))
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .padding(.bottom, 8)
-            .accessibilityLabel("Quit application")
         }
-        .frame(width: 240)
+        .padding(12)
+        .frame(width: 332)
+        .foregroundStyle(DS.Colors.textPrimary)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 25, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 25, style: .continuous))
+        .preferredColorScheme(.dark)
     }
 
-    private func loveTrack(track: String, artist: String) {
-        guard let sessionKey = monitor.sessionKey else { return }
-        loveError = nil
-        Task {
-            do {
-                try await appState.scrobbleService.loveTrack(track: track, artist: artist, sessionKey: sessionKey)
-            } catch {
-                await MainActor.run { loveError = "Failed" }
+    @ViewBuilder private var player: some View {
+        if let track = monitor.currentTrackName, let artist = monitor.currentArtist {
+            VStack(alignment: .leading, spacing: 13) {
+                HStack(spacing: 5) {
+                    Circle().fill(monitor.isPlaying && monitor.isScrobbling ? DS.Colors.success : DS.Colors.textMuted)
+                        .frame(width: 5, height: 5)
+                    Text(!monitor.isScrobbling ? "Scrobbler paused" : monitor.isPlaying ? "Now playing" : "Playback paused")
+                        .font(DS.Fonts.captionMedium(11)).foregroundStyle(DS.Colors.textSecondary)
+                    Spacer()
+                    if monitor.hasCurrentTrackScrobbled {
+                        Label("Scrobbled", systemImage: "checkmark.circle.fill")
+                            .font(DS.Fonts.caption(10)).foregroundStyle(DS.Colors.success)
+                    }
+                }
+                HStack(spacing: 12) {
+                    MediaImage(url: monitor.currentAlbumArt, placeholder: "music.note", size: 58, cornerRadius: 13)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(track).font(DS.Fonts.body(14).weight(.semibold)).lineLimit(2)
+                        Text(artist).font(DS.Fonts.body(12)).foregroundStyle(DS.Colors.textSecondary).lineLimit(1)
+                        if let album = monitor.currentAlbumName, !album.isEmpty {
+                            Text(album).font(DS.Fonts.caption(11)).foregroundStyle(DS.Colors.textTertiary).lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                if monitor.currentDuration > 0 {
+                    ProgressView(value: min(1, max(0, Double(monitor.currentPosition) / Double(monitor.currentDuration))))
+                        .tint(appState.accentColor)
+                        .accessibilityLabel("Playback progress")
+                }
+                HStack(spacing: 13) {
+                    playbackButton("backward.fill", label: "Previous track", size: 30, action: monitor.previousTrack)
+                    playbackButton(monitor.isPlaying ? "pause.fill" : "play.fill",
+                                   label: monitor.isPlaying ? "Pause playback" : "Play", size: 38, action: monitor.togglePlayPause)
+                    playbackButton("forward.fill", label: "Next track", size: 30, action: monitor.nextTrack)
+                    Spacer()
+                    playbackButton(monitor.isLoved ? "heart.fill" : "heart",
+                                   label: monitor.isLoved ? "Unlove track" : "Love track", size: 32,
+                                   action: monitor.toggleLoveCurrentTrack)
+                }
             }
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: monitor.isScrobbling ? "music.note" : "waveform.slash")
+                    .font(.system(size: 25)).foregroundStyle(appState.accentColor)
+                Text(monitor.isScrobbling ? "Ready for your next track" : "Scrobbler paused")
+                    .font(DS.Fonts.bodyMedium(13))
+                Text(monitor.isScrobbling ? "Play something in Apple Music." : "Resume to keep tracking your music.")
+                    .font(DS.Fonts.caption(11)).foregroundStyle(DS.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 12)
         }
+    }
+
+    private func playbackButton(_ icon: String, label: String, size: CGFloat, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: size > 35 ? 14 : 12, weight: .semibold))
+                .frame(width: size, height: size)
+                .background(.white.opacity(size > 35 ? 0.13 : 0.07), in: Circle())
+                .contentShape(Circle())
+        }.buttonStyle(.plain).help(label).accessibilityLabel(label)
+    }
+
+    private func openDashboard() {
+        openWindow(id: "dashboard")
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+private struct MenuActionRow: View {
+    let title: String
+    let icon: String
+    var trailing: String? = nil
+    let action: () -> Void
+    @State private var hovered = false
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon).font(.system(size: 13)).frame(width: 18)
+                Text(title).font(DS.Fonts.body(12))
+                Spacer()
+                if let trailing { Text(trailing).font(DS.Fonts.caption(11)).foregroundStyle(DS.Colors.textTertiary) }
+            }
+            .padding(.horizontal, 11).padding(.vertical, 9)
+            .background(.white.opacity(hovered ? 0.09 : 0), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 11))
+        }
+        .buttonStyle(.plain).onHover { hovered = $0 }.accessibilityLabel(title)
     }
 }
 
 struct StatPill: View {
     let value: String
     let label: String
-
     var body: some View {
-        VStack(spacing: 2) {
-            Text(value)
-                .font(DS.Fonts.statNumber(14))
-            Text(label)
-                .font(DS.Fonts.caption(9))
-                .foregroundStyle(DS.Colors.textSecondary)
+        VStack(spacing: 4) {
+            Text(value).font(DS.Fonts.statNumber(17)).monospacedDigit()
+            Text(label).font(DS.Fonts.caption(10)).foregroundStyle(DS.Colors.textSecondary)
         }
         .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label): \(value)")
+        .accessibilityElement(children: .combine).accessibilityLabel("\(label): \(value)")
     }
 }

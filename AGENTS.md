@@ -124,9 +124,15 @@ Sources/
   3. Sends `updateNowPlaying` to Last.fm.
   4. Upon success, posts `.nowPlayingDidUpdate` which triggers a secondary sync after 1.2s to ensure the new track appears as Now Playing.
 
-### Offline Resilience
-- If network requests fail during a scrobble, `OfflineScrobbleQueue` stores the scrobble locally in `~/Library/Application Support/LastFM/offline_scrobbles.json`.
-- When connectivity resumes or during regular polling, `flushOfflineQueue()` re-attempts submissions chronologically.
+### Playback identity, artwork, and offline resilience
+- `ScrobbleMonitor` owns published state on `@MainActor`; AppleScript executes only on its serial `pollQueue`.
+- `PlaybackSession` credits observed position advancement bounded by monotonic elapsed time. Initial position, seeks, buffering, and sleep gaps do not count as listened time. Preserve submission state across monitor pause/resume.
+- Track identity includes database ID, title, artist, and album. Poll and artwork completions must match the active monitoring/track generation; never check title alone.
+- Local artwork uses metadata-hashed v2 files and validates the current Music track while extracting bytes. Remote covers require matching artist AND album; ambiguous song-only results are not accepted. Cached image loads clear their old result and reject late completions.
+- Persist every eligible scrobble atomically in `OfflineScrobbleQueue` before sending. Remove accepted events by ID, never replace the queue with a stale snapshot. Queue events are account-scoped; unverified legacy events are temporarily bound to a session fingerprint until identity is verified.
+- `ScrobbleService` returns normally only for accepted submissions and throws distinct API/HTTP/ignored errors. Transient errors remain queued with bounded backoff. Authentication errors stop monitoring and request reconnect.
+- Credentials use `CredentialStore` / macOS Keychain. Defaults migration deletes plaintext secret/session values only after successful verified writes. Never log secrets, session keys, signatures, or full authenticated responses.
+- Run `./scripts/test.sh` for the isolated Swift Testing regression suite; `./scripts/build-app.sh` builds and signs a reproducible app bundle and ZIP. The scripts select the macOS 26.5 SDK on this Mac.
 
 ---
 

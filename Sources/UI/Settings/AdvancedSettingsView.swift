@@ -4,10 +4,15 @@ import ServiceManagement
 struct AdvancedSettingsView: View {
     @EnvironmentObject var appState: AppState
     @State private var launchAtLogin = false
+    @State private var operationMessage: String?
     @State private var showClearStatsConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
+            if let operationMessage {
+                Text(operationMessage).font(DS.Fonts.caption(12))
+                    .foregroundStyle(DS.Colors.textSecondary).textSelection(.enabled)
+            }
             // Launch at Login
             VStack(alignment: .leading, spacing: DS.Spacing.lg) {
                 SectionHeader(title: "General", icon: "gearshape")
@@ -127,7 +132,8 @@ struct AdvancedSettingsView: View {
                 try SMAppService.mainApp.unregister()
             }
         } catch {
-            NSLog("[Settings] Launch at login error: %@", error.localizedDescription)
+            operationMessage = "Could not change launch at login: \(error.localizedDescription)"
+            launchAtLogin = SMAppService.mainApp.status == .enabled
         }
     }
 
@@ -137,15 +143,17 @@ struct AdvancedSettingsView: View {
         panel.nameFieldStringValue = "lastfm_scrobble_history.json"
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            let source = appSupport.appendingPathComponent("LastFM/scrobble_stats.json")
-            try? FileManager.default.copyItem(at: source, to: url)
+            do {
+                try appState.statsManager.export(to: url)
+                operationMessage = "History exported to \(url.lastPathComponent)."
+            } catch { operationMessage = "Could not export history: \(error.localizedDescription)" }
         }
     }
 
     private func clearLocalStats() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let statsFile = appSupport.appendingPathComponent("LastFM/scrobble_stats.json")
-        try? FileManager.default.removeItem(at: statsFile)
+        do {
+            try appState.statsManager.clear()
+            operationMessage = "Local history cleared. Your Last.fm history is unchanged."
+        } catch { operationMessage = "Could not clear local history: \(error.localizedDescription)" }
     }
 }

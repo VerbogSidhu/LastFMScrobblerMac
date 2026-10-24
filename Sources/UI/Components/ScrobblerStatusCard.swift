@@ -15,7 +15,11 @@ struct ScrobblerStatusCard: View {
                         .font(DS.Fonts.captionMedium(12))
                         .foregroundStyle(DS.Colors.textPrimary)
                     Spacer()
-                    if monitor.isScrobbling {
+                    if let error = monitor.lastError ?? appState.statsManager.persistenceError {
+                    Text(error).font(DS.Fonts.caption(11)).foregroundStyle(DS.Colors.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if monitor.isScrobbling {
                         IconButton(icon: "ladybug", label: "Toggle debug log", isActive: showDebug) {
                             showDebug.toggle()
                         }

@@ -1,7 +1,8 @@
 import SwiftUI
+import Combine
 
 @MainActor
-class AppState: ObservableObject {
+final class AppState: ObservableObject {
     @Published var recentTracks: [RecentTrack] = []
     @Published var topArtists: [TopArtist] = []
     @Published var topAlbums: [TopAlbum] = []
@@ -10,229 +11,164 @@ class AppState: ObservableObject {
     @Published var selectedTab: SidebarTab = .recent
     @Published var isLoading = false
     @Published var errorMessage: String?
-    @Published var accentColorName: String = UserDefaults.standard.string(forKey: "accent_color") ?? "red"
-    
-    var accentColor: Color {
-        DS.Colors.color(for: accentColorName)
-    }
-    
-    func setAccentColor(_ name: String) {
-        accentColorName = name
-        UserDefaults.standard.set(name, forKey: "accent_color")
-    }
-    
-    // Menu bar stats (from Last.fm API)
-    @Published var menuBarTodayCount: Int = 0
-    @Published var menuBarWeekCount: Int = 0
-    @Published var menuBarMonthCount: Int = 0
+    @Published var accentColorName = UserDefaults.standard.string(forKey: "accent_color") ?? "red"
+    @Published var menuBarTodayCount = 0
+    @Published var menuBarWeekCount = 0
+    @Published var menuBarMonthCount = 0
+    @Published var inspectorEntity: InspectorEntity?
+    @Published var showManualScrobble = false
+    @Published var showShareCard = false
+    @Published var showSettings = false
 
-    // Modals & Drill-downs
-    @Published var inspectorEntity: InspectorEntity? = nil
-    @Published var showManualScrobble: Bool = false
-    @Published var showShareCard: Bool = false
-    
     let scrobbleMonitor = ScrobbleMonitor()
     let statsManager = ScrobbleStatsManager()
     let service = LastFMService()
     let scrobbleService = ScrobbleService()
-    
-    /// Tracks which tabs have already loaded to avoid redundant fetches.
-    private var loadedTabs: Set<SidebarTab> = []
+    private var subscriptions = Set<AnyCancellable>()
     private var refreshTimer: Timer?
-    private var notificationObservers: [NSObjectProtocol] = []
-    private var lastScrobbledTrack: String?
-    private var lastMenuBarStatsFetch: Date = .distantPast
-    
+    private var loadTask: Task<Void, Never>?
+    private var recentTask: Task<Void, Never>?
+    private var countsTask: Task<Void, Never>?
+    private var started = false
+    private var accountGeneration = UUID()
+    private var loadGeneration = UUID()
+
+    var accentColor: Color { DS.Colors.color(for: accentColorName) }
+
     init() {
         scrobbleMonitor.statsManager = statsManager
-        startAutoRefresh()
-    }
-    
-    deinit {
-        refreshTimer?.invalidate()
-        notificationObservers.forEach { NotificationCenter.default.removeObserver($0) }
-    }
-    
-    /// Auto-refresh data in background periodically and immediately after scrobbles or track skips.
-    private func startAutoRefresh() {
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                // Only poll if music is actively playing
-                if self?.scrobbleMonitor.isPlaying == true {
-                    self?.refreshAfterScrobble()
-                }
-            }
+        scrobbleMonitor.objectWillChange
+            .debounce(for: .milliseconds(16), scheduler: DispatchQueue.main)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &subscriptions)
+        for name in [Notification.Name.scrobbleDidComplete, .trackDidChange, .nowPlayingDidUpdate] {
+            NotificationCenter.default.publisher(for: name)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    self?.service.invalidateCache()
+                    self?.refreshRecentTracks()
+                    if name == .scrobbleDidComplete { self?.refreshCounts() }
+                }.store(in: &subscriptions)
         }
-        
-        // Observe scrobble events for immediate refresh
-        let scrobbleObs = NotificationCenter.default.addObserver(
-            forName: .scrobbleDidComplete,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.refreshAfterScrobble()
-            }
-        }
-        notificationObservers.append(scrobbleObs)
+        NotificationCenter.default.publisher(for: .accountDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.accountChanged() }
+            .store(in: &subscriptions)
+    }
 
-        // Observe track skip / change events to immediately refresh recent tracks
-        let skipObs = NotificationCenter.default.addObserver(
-            forName: .trackDidChange,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
+    deinit { refreshTimer?.invalidate() }
+
+    func startup() {
+        guard !started else { return }
+        started = true
+        scrobbleMonitor.setup()
+        if scrobbleMonitor.authStatus == .authenticated {
+            // Existing installations should not be forced through onboarding again.
+            UserDefaults.standard.set(true, forKey: "lastfm_setup_complete")
+            scrobbleMonitor.startMonitoring()
+        }
+        loadAll()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshRecentTracks()
+                self?.refreshCounts()
             }
         }
-        notificationObservers.append(skipObs)
-
-        // When Last.fm updates now-playing, re-query after a slight delay to ensure the new track is indexed
-        let nowPlayingObs = NotificationCenter.default.addObserver(
-            forName: .nowPlayingDidUpdate,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 1_200_000_000) // 1.2s delay for Last.fm propagation
-                self?.refreshRecentTracks()
-            }
-        }
-        notificationObservers.append(nowPlayingObs)
     }
-    
-    /// Lightweight refresh — only updates recent tracks and menu bar stats.
+
+    func setAccentColor(_ name: String) {
+        accentColorName = name
+        UserDefaults.standard.set(name, forKey: "accent_color")
+    }
+
+    private func accountChanged() {
+        accountGeneration = UUID()
+        loadTask?.cancel(); recentTask?.cancel(); countsTask?.cancel()
+        recentTracks = []; topArtists = []; topAlbums = []; topTracks = []; userInfo = nil
+        menuBarTodayCount = 0; menuBarWeekCount = 0; menuBarMonthCount = 0
+        service.invalidateCache()
+        loadAll()
+    }
+
     func refreshRecentTracks() {
-        Task {
+        let username = Constants.lastFMUsername
+        guard !username.isEmpty else { return }
+        recentTask?.cancel()
+        let generation = accountGeneration
+        recentTask = Task {
             do {
-                let (tracks, _, _) = try await service.getRecentTracks(username: Constants.lastFMUsername, limit: 20)
-                await MainActor.run {
-                    self.recentTracks = tracks
-                }
-            } catch {
-                // Silent fail for background refresh
-            }
+                let result = try await service.getRecentTracks(username: username, limit: 20, forceRefresh: true)
+                guard !Task.isCancelled, generation == accountGeneration else { return }
+                recentTracks = result.tracks
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled { errorMessage = error.localizedDescription } }
         }
     }
 
-    /// Refresh called after a confirmed scrobble.
-    private func refreshAfterScrobble() {
-        refreshRecentTracks()
-        
-        Task {
-            let now = Date()
-            if now.timeIntervalSince(lastMenuBarStatsFetch) >= 300 {
-                lastMenuBarStatsFetch = now
-                
-                // Refresh menu bar stats from API
-                async let todayCount = service.getScrobbleCount(username: Constants.lastFMUsername, period: "7day")
-                async let weekCount = service.getScrobbleCount(username: Constants.lastFMUsername, period: "1month")
-                async let monthCount = service.getScrobbleCount(username: Constants.lastFMUsername, period: "3month")
-                
-                do {
-                    let today = try await todayCount
-                    let week = try await weekCount
-                    let month = try await monthCount
-                    await MainActor.run {
-                        self.menuBarTodayCount = today
-                        self.menuBarWeekCount = week
-                        self.menuBarMonthCount = month
-                    }
-                } catch {}
-            }
+    func refreshCounts() {
+        let username = Constants.lastFMUsername
+        guard !username.isEmpty else { return }
+        countsTask?.cancel()
+        let generation = accountGeneration
+        let now = Date()
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: now)
+        let week = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? day
+        let month = calendar.dateInterval(of: .month, for: now)?.start ?? day
+        countsTask = Task {
+            do {
+                async let today = service.getScrobbleCount(username: username, from: day, to: now)
+                async let weekly = service.getScrobbleCount(username: username, from: week, to: now)
+                async let monthly = service.getScrobbleCount(username: username, from: month, to: now)
+                let values = try await (today, weekly, monthly)
+                guard !Task.isCancelled, generation == accountGeneration else { return }
+                menuBarTodayCount = values.0
+                menuBarWeekCount = values.1
+                menuBarMonthCount = values.2
+            } catch { if !Task.isCancelled { errorMessage = error.localizedDescription } }
         }
     }
-    
-    /// Load all data on first launch — runs all API calls in parallel.
+
+    /// A deliberate refresh invalidates cache and refreshes the visible independent view.
     func loadAll() {
-        guard !isLoading else { return }
+        loadTask?.cancel()
+        service.invalidateCache()
+        NotificationCenter.default.post(name: .dashboardDidRefresh, object: nil)
+        let username = Constants.lastFMUsername
+        guard !username.isEmpty else { isLoading = false; return }
         isLoading = true
+        let request = UUID()
+        loadGeneration = request
         errorMessage = nil
-        
-        // Also push now-playing when user manually refreshes
-        scrobbleMonitor.forceNowPlayingUpdate()
-        
-        Task {
+        let generation = accountGeneration
+        refreshCounts()
+        loadTask = Task {
+            defer { if generation == accountGeneration, request == loadGeneration { isLoading = false } }
             do {
-                // All 5 calls run concurrently
-                async let tracksResult = service.getRecentTracks(username: Constants.lastFMUsername, limit: 20)
-                async let artistsResult = service.getTopArtists(username: Constants.lastFMUsername, limit: 12)
-                async let albumsResult = service.getTopAlbums(username: Constants.lastFMUsername, limit: 12)
-                async let tracksTopResult = service.getTopTracks(username: Constants.lastFMUsername, limit: 12)
-                async let userResult = service.getUserInfo(username: Constants.lastFMUsername)
-                
-                let (tracks, _, _) = try await tracksResult
-                let artists = try await artistsResult
-                let albums = try await albumsResult
-                let tracksTop = try await tracksTopResult
-                let user = try await userResult
-                
-                self.recentTracks = tracks
-                self.topArtists = artists
-                self.topAlbums = albums
-                self.topTracks = tracksTop
-                self.userInfo = user
-                self.isLoading = false
-                self.loadedTabs = Set(SidebarTab.allCases)
-                
-                // Fetch menu bar stats from API
-                async let todayCount = self.service.getScrobbleCount(username: Constants.lastFMUsername, period: "7day")
-                async let weekCount = self.service.getScrobbleCount(username: Constants.lastFMUsername, period: "1month")
-                async let monthCount = self.service.getScrobbleCount(username: Constants.lastFMUsername, period: "3month")
-                self.menuBarTodayCount = try await todayCount
-                self.menuBarWeekCount = try await weekCount
-                self.menuBarMonthCount = try await monthCount
-            } catch {
-                self.errorMessage = error.localizedDescription
-                self.isLoading = false
-            }
+                async let recent = service.getRecentTracks(username: username, limit: 20, forceRefresh: true)
+                async let artists = service.getTopArtists(username: username, limit: 12)
+                async let albums = service.getTopAlbums(username: username, limit: 12)
+                async let tracks = service.getTopTracks(username: username, limit: 12)
+                async let user = service.getUserInfo(username: username)
+                let result = try await (recent, artists, albums, tracks, user)
+                guard !Task.isCancelled, generation == accountGeneration else { return }
+                recentTracks = result.0.tracks
+                topArtists = result.1
+                topAlbums = result.2
+                topTracks = result.3
+                userInfo = result.4
+            } catch { if !Task.isCancelled, generation == accountGeneration { errorMessage = error.localizedDescription } }
         }
-    }
-    
-    /// Load data for a specific tab. Skips if already loaded.
-    func loadTab(_ tab: SidebarTab) {
-        guard !loadedTabs.contains(tab) else { return }
-        loadedTabs.insert(tab)
-        
-        Task {
-            do {
-                switch tab {
-                case .recent:
-                    let (tracks, _, _) = try await service.getRecentTracks(username: Constants.lastFMUsername, limit: 20)
-                    self.recentTracks = tracks
-                case .artists:
-                    self.topArtists = try await service.getTopArtists(username: Constants.lastFMUsername, limit: 12)
-                case .albums:
-                    self.topAlbums = try await service.getTopAlbums(username: Constants.lastFMUsername, limit: 12)
-                case .stats:
-                    // Stats loads its own data independently
-                    break
-                case .reports:
-                    // Reports loads its own data independently
-                    break
-                }
-            } catch {
-                // Silently fail for tab loads — user can retry by switching tabs
-            }
-        }
-    }
-    
-    /// Force-reload a tab's data (for pull-to-refresh, etc.).
-    func refreshTab(_ tab: SidebarTab) {
-        loadedTabs.remove(tab)
-        loadTab(tab)
     }
 
-    /// Remove a track locally from recent scrobbles and open Last.fm library edit page.
+    func loadTab(_ tab: SidebarTab) { refreshTab(tab) }
+    func refreshTab(_ tab: SidebarTab) { loadAll() }
+
     func removeRecentTrack(id: UUID, openLibraryWeb: Bool = true) {
         recentTracks.removeAll { $0.id == id }
-        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
-        if openLibraryWeb {
-            let username = Constants.lastFMUsername
-            if let url = URL(string: "https://www.last.fm/user/\(username)/library") {
-                NSWorkspace.shared.open(url)
-            }
+        if openLibraryWeb, let url = URL(string: "https://www.last.fm/user/\(Constants.lastFMUsername)/library") {
+            NSWorkspace.shared.open(url)
         }
     }
 }
