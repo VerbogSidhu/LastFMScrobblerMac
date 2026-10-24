@@ -1,171 +1,100 @@
 import Foundation
 
-/// A generated listening report summarizing activity over a time period.
-/// Fetches data from the Last.fm API.
+/// A complete report from one fixed UTC query interval. Preview limits never affect totals.
 struct ListeningReport: Identifiable {
     let id = UUID()
     let period: TimePeriod
     let generatedAt: Date
-    let totalScrobbles: Int       // from top artists sum — authoritative for the period
+    let totalScrobbles: Int
     let uniqueArtists: Int
     let uniqueAlbums: Int
     let uniqueTracks: Int
     let topArtists: [(name: String, count: Int)]
     let topAlbums: [(name: String, artist: String, count: Int)]
     let topTracks: [(name: String, artist: String, count: Int)]
-    let scrobblesPerDay: [(date: Date, count: Int)]   // every day in period, 0-filled
+    /// Chart buckets are hourly today, daily in short periods, monthly/yearly in long periods.
+    let scrobblesPerDay: [(date: Date, count: Int)]
+    let chartUnit: Calendar.Component
+    let range: DateInterval
     let peakDay: (date: Date, count: Int)?
     let averagePerDay: Double
-    
-    /// Generate a report by fetching from the Last.fm API.
-    @MainActor
-    static func generate(username: String, service: LastFMService, period: TimePeriod) async -> ListeningReport {
-        let calendar = Calendar.current
-        let now = Date()
-        let periodStart = period.startDate
-        
-        // Max pages to fetch for the daily chart — stop early once we pass periodStart
-        let maxPages: Int
-        switch period {
-        case .day:         maxPages = 5
-        case .week:        maxPages = 10
-        case .month:       maxPages = 15
-        case .threeMonths: maxPages = 40
-        case .year:        maxPages = 80
-        case .allTime:     maxPages = 120
-        }
-        
-        // Fetch top artists, albums, tracks for this period
-        async let artistsTask = service.getTopArtists(username: username, limit: 50, period: period.lastfmPeriod)
-        async let albumsTask = service.getTopAlbums(username: username, limit: 50, period: period.lastfmPeriod)
-        async let tracksTask = service.getTopTracks(username: username, limit: 50, period: period.lastfmPeriod)
-        
-        // Fetch recent tracks for the daily chart
-        async let recentTask = fetchTracksInPeriod(
-            username: username, service: service,
-            periodStart: periodStart, maxPages: maxPages
-        )
-        
-        do {
-            let (artists, albums, tracks, recentTracks) = try await (
-                artistsTask, albumsTask, tracksTask, recentTask
-            )
-            
-            // Total scrobbles = sum of all artist playcounts for this period.
-            // This is authoritative from Last.fm and consistent with the top lists.
-            let totalFromArtists = artists.reduce(0) { $0 + $1.playcount }
-            
-            // Unique counts from fetched data
-            let artistSet = Set(artists.map(\.name))
-            let albumSet = Set(albums.map { "\($0.name)|||\($0.artist)" })
-            let trackSet = Set(tracks.map { "\($0.name)|||\($0.artist)" })
-            
-            // Build daily breakdown from recent tracks — fill ALL days in the period
-            var dayCounts: [Date: Int] = [:]
-            for track in recentTracks {
-                guard let uts = track.date, let ts = TimeInterval(uts) else { continue }
-                let date = Date(timeIntervalSince1970: ts)
-                guard date >= periodStart else { continue }
-                let day = calendar.startOfDay(for: date)
-                dayCounts[day, default: 0] += 1
-            }
-            
-            let filledDays = fillDays(from: periodStart, to: now, counts: dayCounts)
-            let peakDay = filledDays.max(by: { $0.count < $1.count })
-            
-            let daysSinceStart = max(calendar.dateComponents([.day], from: periodStart, to: now).day ?? 1, 1)
-            let averagePerDay = Double(totalFromArtists) / Double(daysSinceStart)
-            
-            return ListeningReport(
-                period: period,
-                generatedAt: Date(),
-                totalScrobbles: totalFromArtists,
-                uniqueArtists: artistSet.count,
-                uniqueAlbums: albumSet.count,
-                uniqueTracks: trackSet.count,
-                topArtists: artists.prefix(10).map { (name: $0.name, count: $0.playcount) },
-                topAlbums: albums.prefix(10).map { (name: $0.name, artist: $0.artist, count: $0.playcount) },
-                topTracks: tracks.prefix(10).map { (name: $0.name, artist: $0.artist, count: $0.playcount) },
-                scrobblesPerDay: filledDays,
-                peakDay: peakDay,
-                averagePerDay: averagePerDay
-            )
-        } catch {
-            return ListeningReport(
-                period: period,
-                generatedAt: Date(),
-                totalScrobbles: 0,
-                uniqueArtists: 0,
-                uniqueAlbums: 0,
-                uniqueTracks: 0,
-                topArtists: [],
-                topAlbums: [],
-                topTracks: [],
-                scrobblesPerDay: [],
-                peakDay: nil,
-                averagePerDay: 0
-            )
-        }
+
+    static func generate(username: String, service: LastFMService, period: TimePeriod,
+                         now: Date = Date(), calendar: Calendar = .current) async throws -> ListeningReport {
+        let range = period.dateRange(endingAt: now, calendar: calendar)
+        let tracks = try await service.getTracks(username: username, from: range.start, to: range.end)
+        try Task.checkCancellation()
+        return try build(tracks: tracks, period: period, range: range, calendar: calendar)
     }
-    
-    /// Fetch recent tracks page by page, stopping once we pass the period start.
-    private static func fetchTracksInPeriod(
-        username: String, service: LastFMService,
-        periodStart: Date, maxPages: Int
-    ) async throws -> [RecentTrack] {
-        var allTracks: [RecentTrack] = []
-        var page = 1
-        
-        while page <= maxPages {
-            let result = try await service.getRecentTracks(username: username, limit: 50, page: page)
-            let tracks = result.tracks
-            
-            var hitOldTrack = false
-            for track in tracks {
-                if let uts = track.date, let ts = TimeInterval(uts) {
-                    let date = Date(timeIntervalSince1970: ts)
-                    if date < periodStart {
-                        hitOldTrack = true
-                        break
-                    }
-                }
-                allTracks.append(track)
-            }
-            
-            if hitOldTrack || tracks.count < 50 || page >= result.totalPages {
-                break
-            }
-            
-            page += 1
+
+    private struct MediaKey: Hashable { let name: String; let artist: String }
+
+    static func build(tracks: [RecentTrack], period: TimePeriod, range: DateInterval,
+                      calendar: Calendar = .current) throws -> ListeningReport {
+        var artists: [String: Int] = [:]
+        var albums: [MediaKey: Int] = [:]
+        var titles: [MediaKey: Int] = [:]
+        var daily: [Date: Int] = [:]
+        var timestamps: [Date] = []
+        for (index, track) in tracks.enumerated() {
+            if index.isMultiple(of: 200) { try Task.checkCancellation() }
+            guard !track.nowPlaying, let uts = track.date, let value = TimeInterval(uts) else { continue }
+            let date = Date(timeIntervalSince1970: value)
+            guard date >= range.start && date <= range.end else { continue }
+            timestamps.append(date)
+            artists[track.artist, default: 0] += 1
+            if !track.album.isEmpty { albums[MediaKey(name: track.album, artist: track.artist), default: 0] += 1 }
+            titles[MediaKey(name: track.name, artist: track.artist), default: 0] += 1
+            daily[calendar.startOfDay(for: date), default: 0] += 1
         }
-        
-        return allTracks
-    }
-    
-    /// Fill in missing days between start and end with 0 counts.
-    private static func fillDays(from start: Date, to end: Date, counts: [Date: Int]) -> [(date: Date, count: Int)] {
-        let calendar = Calendar.current
-        var result: [(date: Date, count: Int)] = []
-        
-        var day = calendar.startOfDay(for: start)
-        let endDate = calendar.startOfDay(for: end)
-        
-        while day <= endDate {
-            let count = counts[day] ?? 0
-            result.append((date: day, count: count))
-            day = calendar.date(byAdding: .day, value: 1, to: day)!
+        let start = period == .allTime ? calendar.startOfDay(for: timestamps.min() ?? range.end) : range.start
+        let chartRange = DateInterval(start: start, end: range.end)
+        let dayCount = max(1, (calendar.dateComponents([.day], from: calendar.startOfDay(for: start), to: calendar.startOfDay(for: range.end)).day ?? 0) + 1)
+        let unit: Calendar.Component
+        if period == .day { unit = .hour }
+        else if dayCount <= 366 { unit = .day }
+        else {
+            let months = (calendar.dateComponents([.month], from: calendar.dateInterval(of: .month, for: start)!.start, to: calendar.dateInterval(of: .month, for: range.end)!.start).month ?? 0) + 1
+            unit = months <= 366 ? .month : .year
         }
-        
-        return result
+        var buckets: [Date: Int] = [:]
+        for date in timestamps {
+            let bucket = calendar.dateInterval(of: unit, for: date)!.start
+            buckets[bucket, default: 0] += 1
+        }
+        var filled: [(date: Date, count: Int)] = []
+        var date = calendar.dateInterval(of: unit, for: start)!.start
+        let end = calendar.dateInterval(of: unit, for: range.end)!.start
+        while date <= end {
+            try Task.checkCancellation()
+            filled.append((date: date, count: buckets[date] ?? 0))
+            guard let next = calendar.date(byAdding: unit, value: 1, to: date), next > date else { break }
+            date = next
+        }
+        let rankedArtists = artists.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+        func ranked(_ counts: [MediaKey: Int]) -> [(name: String, artist: String, count: Int)] {
+            counts.sorted { lhs, rhs in
+                if lhs.value != rhs.value { return lhs.value > rhs.value }
+                return (lhs.key.name, lhs.key.artist) < (rhs.key.name, rhs.key.artist)
+            }.prefix(10).map { (name: $0.key.name, artist: $0.key.artist, count: $0.value) }
+        }
+        let peak = daily.sorted { lhs, rhs in lhs.value == rhs.value ? lhs.key < rhs.key : lhs.value > rhs.value }.first
+        return ListeningReport(period: period, generatedAt: range.end, totalScrobbles: timestamps.count,
+            uniqueArtists: artists.count, uniqueAlbums: albums.count, uniqueTracks: titles.count,
+            topArtists: rankedArtists.prefix(10).map { (name: $0.key, count: $0.value) },
+            topAlbums: ranked(albums), topTracks: ranked(titles), scrobblesPerDay: filled,
+            chartUnit: unit, range: chartRange, peakDay: peak.map { (date: $0.key, count: $0.value) },
+            averagePerDay: Double(timestamps.count) / Double(dayCount))
     }
-    
+
     /// Format the report as a shareable text string.
     func formattedText() -> String {
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         
         var text = "📊 Listening Report — \(period.rawValue)\n"
-        text += "Generated \(formatter.string(from: generatedAt))\n\n"
+        text += "\(formatter.string(from: range.start)) – \(formatter.string(from: range.end))\n"
+        text += "Generated \(formatter.string(from: generatedAt)) · Average includes today.\n\n"
         text += "🔢 \(totalScrobbles) scrobbles · \(uniqueArtists) artists · \(uniqueAlbums) albums · \(uniqueTracks) tracks\n"
         text += "📈 Avg \(String(format: "%.1f", averagePerDay))/day"
         

@@ -8,6 +8,7 @@ struct ReportsView: View {
     @State private var report: ListeningReport?
     @State private var isGenerating = false
     @State private var currentTask: Task<Void, Never>?
+    @State private var errorMessage: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -49,15 +50,19 @@ struct ReportsView: View {
 
             if isGenerating {
                 LoadingState(message: "Generating report…")
+            } else if let errorMessage {
+                ErrorState(message: errorMessage) { generateReport() }
             } else if let report {
                 ScrollView {
                     VStack(alignment: .leading, spacing: DS.Spacing.xxl) {
-                        // Summary Cards
+                        Text("\(report.range.start.formatted(date: .abbreviated, time: .omitted)) – \(report.range.end.formatted(date: .abbreviated, time: .omitted)) · Average includes today")
+                            .font(DS.Fonts.caption(11))
+                            .foregroundStyle(DS.Colors.textSecondary)
                         ReportSummaryCards(report: report)
 
                         // Daily Scrobble Chart
                         if !report.scrobblesPerDay.isEmpty {
-                            ScrobbleChart(data: report.scrobblesPerDay, period: selectedPeriod)
+                            ScrobbleChart(data: report.scrobblesPerDay, period: selectedPeriod, unit: report.chartUnit)
                         }
 
                         // Top Lists
@@ -93,26 +98,28 @@ struct ReportsView: View {
         }
         .onAppear { generateReport() }
         .onDisappear { currentTask?.cancel() }
+        .onReceive(NotificationCenter.default.publisher(for: .dashboardDidRefresh)) { _ in generateReport() }
     }
 
     private func generateReport() {
         currentTask?.cancel()
         isGenerating = true
         report = nil
+        errorMessage = nil
 
         let period = selectedPeriod
 
         currentTask = Task {
-            let newReport = await ListeningReport.generate(
-                username: Constants.lastFMUsername,
-                service: appState.service,
-                period: period
-            )
-
-            guard !Task.isCancelled, selectedPeriod == period else { return }
-
-            await MainActor.run {
+            do {
+                let newReport = try await ListeningReport.generate(username: Constants.lastFMUsername, service: appState.service, period: period)
+                guard !Task.isCancelled, selectedPeriod == period else { return }
                 report = newReport
+                isGenerating = false
+            } catch is CancellationError {
+                // The replacement task owns the loading state.
+            } catch {
+                guard !Task.isCancelled, selectedPeriod == period else { return }
+                errorMessage = error.localizedDescription
                 isGenerating = false
             }
         }
@@ -201,6 +208,7 @@ struct ScrobbleChart: View {
     @EnvironmentObject var appState: AppState
     let data: [(date: Date, count: Int)]
     let period: TimePeriod
+    let unit: Calendar.Component
 
     private var chartPoints: [ReportChartPoint] {
         data.enumerated().map { ReportChartPoint(id: $0.offset, date: $0.element.date, count: $0.element.count) }
@@ -212,7 +220,7 @@ struct ScrobbleChart: View {
                 HStack {
                     Image(systemName: "chart.bar.xaxis")
                         .foregroundStyle(appState.accentColor)
-                    Text("Scrobbles Over Time")
+                    Text(unit == .month ? "Monthly Scrobbles" : unit == .year ? "Yearly Scrobbles" : unit == .hour ? "Scrobbles by Hour" : "Daily Scrobbles")
                         .font(DS.Fonts.subheading(13))
                         .foregroundStyle(DS.Colors.textPrimary)
                     Spacer()
@@ -227,11 +235,13 @@ struct ScrobbleChart: View {
                     Chart {
                         ForEach(chartPoints) { point in
                             BarMark(
-                                x: .value("Date", point.date, unit: calendarUnit(for: period)),
+                                x: .value("Date", point.date, unit: unit),
                                 y: .value("Scrobbles", point.count)
                             )
                             .foregroundStyle(appState.accentColor.gradient)
                             .cornerRadius(2.5)
+                            .accessibilityLabel(point.date.formatted(date: .abbreviated, time: unit == .hour ? .shortened : .omitted))
+                            .accessibilityValue("\(point.count) scrobbles")
                         }
                     }
                     .chartXAxis {
@@ -255,11 +265,4 @@ struct ScrobbleChart: View {
         }
     }
 
-    private func calendarUnit(for period: TimePeriod) -> Calendar.Component {
-        switch period {
-        case .day: return .hour
-        case .week, .month, .threeMonths: return .day
-        case .year, .allTime: return .month
-        }
-    }
 }

@@ -13,6 +13,8 @@ struct StatsView: View {
     @State private var dailyActivity: [DayActivity] = []
     @State private var timeOfDayDistribution: [TimeBucket] = []
     @State private var listeningStreak: Int = 0
+    @State private var streakIsLowerBound = false
+    @State private var refreshGeneration = UUID()
     @State private var isLoading = true
     @State private var error: String?
 
@@ -63,7 +65,7 @@ struct StatsView: View {
                         StatCard(value: formatCount("\(user.playcount)"), label: "Total Scrobbles", color: appState.accentColor)
                         StatCard(value: formatCount(user.artistCount), label: "Artists", color: DS.Colors.info)
                         StatCard(value: formatCount(user.albumCount), label: "Albums", color: DS.Colors.warning)
-                        StatCard(value: "\(listeningStreak)d 🔥", label: "Listening Streak", color: .orange)
+                        StatCard(value: "\(streakIsLowerBound ? "≥" : "")\(listeningStreak)d", label: "Listening Streak", color: .orange)
                     }
 
                     // Milestone Countdown Card
@@ -201,7 +203,7 @@ struct StatsView: View {
                                     Image(systemName: "clock.arrow.circlepath")
                                         .font(.system(size: 13, weight: .semibold))
                                         .foregroundStyle(appState.accentColor)
-                                    Text("Listening by Time of Day")
+                                    Text("Time of Day · Last 30 Days")
                                         .font(DS.Fonts.subheading(13))
                                         .foregroundStyle(DS.Colors.textPrimary)
                                     Spacer()
@@ -289,7 +291,10 @@ struct StatsView: View {
                 )
             }
         }
-        .task { await loadData() }
+        .task(id: refreshGeneration) { await loadData() }
+        .onReceive(NotificationCenter.default.publisher(for: .dashboardDidRefresh)) { _ in
+            refreshGeneration = UUID()
+        }
     }
 
     // MARK: - Milestone Widget
@@ -362,78 +367,35 @@ struct StatsView: View {
         let service = appState.service
 
         do {
-            async let user = service.getUserInfo(username: username)
-            async let artists = service.getTopArtists(username: username, limit: 5, period: "7day")
-            async let albums = service.getTopAlbums(username: username, limit: 5, period: "7day")
-            async let tracks = service.getTopTracks(username: username, limit: 5, period: "7day")
-            async let recent = service.getRecentTracks(username: username, limit: 50)
-
-            let (u, ar, al, tr, rec) = try await (user, artists, albums, tracks, recent)
-
-            // Compute 7-day activity
+            let now = Date()
             let cal = Calendar.current
+            let today = cal.startOfDay(for: now)
+            let historyStart = cal.date(byAdding: .day, value: -29, to: today)!
+            let weekStart = cal.date(byAdding: .day, value: -6, to: today)!
+            async let user = service.getUserInfo(username: username)
+            async let recent = service.getTracks(username: username, from: historyStart, to: now)
+            let (u, history) = try await (user, recent)
+            try Task.checkCancellation()
+            guard username == Constants.lastFMUsername else { return }
+            let summary = try ListeningReport.build(tracks: history, period: .week, range: DateInterval(start: weekStart, end: now), calendar: cal)
+            let ar = summary.topArtists.prefix(5).enumerated().map { index, row in
+                TopArtist(name: row.name, playcount: row.count, imageURL: nil, rank: index + 1)
+            }
+            let al = summary.topAlbums.prefix(5).enumerated().map { index, row in
+                TopAlbum(name: row.name, artist: row.artist, playcount: row.count, imageURL: nil, rank: index + 1)
+            }
+            let tr = summary.topTracks.prefix(5).enumerated().map { index, row in
+                TopTrack(name: row.name, artist: row.artist, playcount: row.count, imageURL: nil, rank: index + 1)
+            }
             let df = DateFormatter()
             df.dateFormat = "EEE"
-
-            var dayCounts: [String: Int] = [:]
-            let now = Date()
-            var orderedDays: [String] = []
-            for i in (0..<7).reversed() {
-                if let date = cal.date(byAdding: .day, value: -i, to: now) {
-                    let d = df.string(from: date)
-                    orderedDays.append(d)
-                    dayCounts[d] = 0
-                }
-            }
-
-            // Time of day buckets
-            var morning = 0
-            var afternoon = 0
-            var evening = 0
-            var night = 0
-
-            // Track days with scrobbles for streak
-            var uniqueDatesWithScrobbles: Set<String> = []
-            let dayDateFormatter = DateFormatter()
-            dayDateFormatter.dateFormat = "yyyy-MM-dd"
-
-            for t in rec.tracks {
-                if let uts = t.date, let ts = TimeInterval(uts) {
-                    let d = Date(timeIntervalSince1970: ts)
-                    let dayStr = df.string(from: d)
-                    if dayCounts[dayStr] != nil {
-                        dayCounts[dayStr]! += 1
-                    }
-                    uniqueDatesWithScrobbles.insert(dayDateFormatter.string(from: d))
-
-                    let hour = cal.component(.hour, from: d)
-                    if hour >= 6 && hour < 12 { morning += 1 }
-                    else if hour >= 12 && hour < 18 { afternoon += 1 }
-                    else if hour >= 18 && hour < 24 { evening += 1 }
-                    else { night += 1 }
-                }
-            }
-
-            // Calculate streak (days in a row backwards from today)
-            var streak = 0
-            for i in 0..<30 {
-                if let date = cal.date(byAdding: .day, value: -i, to: now) {
-                    let dateStr = dayDateFormatter.string(from: date)
-                    if uniqueDatesWithScrobbles.contains(dateStr) {
-                        streak += 1
-                    } else if i > 0 {
-                        // Broke streak
-                        break
-                    }
-                }
-            }
-
-            let activity = orderedDays.map { DayActivity(day: $0, count: dayCounts[$0] ?? 0) }
-            let timeDist: [TimeBucket] = [
-                TimeBucket(period: "Morning", count: morning, icon: "sun.max"),
-                TimeBucket(period: "Afternoon", count: afternoon, icon: "sun.haze"),
-                TimeBucket(period: "Evening", count: evening, icon: "moon.stars"),
-                TimeBucket(period: "Night", count: night, icon: "moon.zzz")
+            let activity = summary.scrobblesPerDay.map { DayActivity(day: df.string(from: $0.date), count: $0.count) }
+            let activitySummary = ListeningActivitySummary(tracks: history, now: now, calendar: cal)
+            let timeDist = [
+                TimeBucket(period: "Morning", count: activitySummary.hourCounts[0], icon: "sun.max"),
+                TimeBucket(period: "Afternoon", count: activitySummary.hourCounts[1], icon: "sun.haze"),
+                TimeBucket(period: "Evening", count: activitySummary.hourCounts[2], icon: "moon.stars"),
+                TimeBucket(period: "Night", count: activitySummary.hourCounts[3], icon: "moon.zzz")
             ]
 
             await MainActor.run {
@@ -443,10 +405,12 @@ struct StatsView: View {
                 self.topTracksWeek = tr
                 self.dailyActivity = activity
                 self.timeOfDayDistribution = timeDist
-                self.listeningStreak = max(1, streak)
+                self.listeningStreak = activitySummary.streak
+                self.streakIsLowerBound = activitySummary.streakIsLowerBound
                 self.isLoading = false
             }
         } catch {
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 self.error = error.localizedDescription
                 self.isLoading = false
@@ -459,5 +423,43 @@ struct StatsView: View {
         if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
         if n >= 1_000 { return String(format: "%.1fK", Double(n) / 1_000) }
         return "\(n)"
+    }
+}
+
+
+/// Counts by actual calendar date, so old tracks with the same weekday never inflate this week.
+struct ListeningActivitySummary {
+    let streak: Int
+    let streakIsLowerBound: Bool
+    let hourCounts: [Int]
+
+    init(tracks: [RecentTrack], now: Date, calendar: Calendar = .current) {
+        let today = calendar.startOfDay(for: now)
+        let cutoff = calendar.date(byAdding: .day, value: -29, to: today)!
+        var days = Set<Date>()
+        var hours = [0, 0, 0, 0]
+        for track in tracks {
+            guard !track.nowPlaying, let uts = track.date, let seconds = TimeInterval(uts) else { continue }
+            let date = Date(timeIntervalSince1970: seconds)
+            guard date >= cutoff && date <= now else { continue }
+            days.insert(calendar.startOfDay(for: date))
+            switch calendar.component(.hour, from: date) {
+            case 6..<12: hours[0] += 1
+            case 12..<18: hours[1] += 1
+            case 18..<24: hours[2] += 1
+            default: hours[3] += 1
+            }
+        }
+        var day = today
+        // A streak remains current until the user has had today's chance to listen.
+        if !days.contains(day) { day = calendar.date(byAdding: .day, value: -1, to: day)! }
+        var value = 0
+        while day >= cutoff && days.contains(day) {
+            value += 1
+            day = calendar.date(byAdding: .day, value: -1, to: day)!
+        }
+        streak = value
+        streakIsLowerBound = value > 0 && day < cutoff
+        hourCounts = hours
     }
 }
