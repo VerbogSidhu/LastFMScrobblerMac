@@ -22,41 +22,41 @@
 
 Files: Services/ScrobbleService.swift; new Core/CredentialStore.swift; UI/Settings/AccountSettingsView.swift; corresponding XCTest tests.
 
-- [ ] Add failing response tests for ignored, malformed, HTTP-error, and Love API-error responses.
-- [ ] Make only accepted submissions succeed; expose ignored and authentication errors distinctly; retain original API error codes.
-- [ ] Add Keychain storage with one-way defaults migration and identity from auth.getSession; preserve a compatibility getSession wrapper if needed.
-- [ ] Fix account form validation, explicit account save, error feedback, and credential loading.
-- [ ] Run targeted tests and compile; provide integration contracts to playback and app-state owners.
+- [x] Add failing response tests for ignored, malformed, HTTP-error, and Love API-error responses.
+- [x] Make only accepted submissions succeed; expose ignored and authentication errors distinctly; retain original API error codes.
+- [x] Add Keychain storage with one-way defaults migration and identity from auth.getSession; preserve a compatibility getSession wrapper if needed.
+- [x] Fix account form validation, explicit account save, error feedback, and credential loading.
+- [x] Run targeted tests and compile; provide integration contracts to playback and app-state owners.
 
 ## Task 2: Playback accounting, durable queue, and artwork identity
 
 Files: Core/ScrobbleMonitor.swift, MusicDetector.swift, OfflineScrobbleQueue.swift; focused helpers and XCTest tests.
 
-- [ ] Reproduce initial-seek credit, long gaps, resume duplication, stale work, queued-event removal, and equal-title artwork races with deterministic inputs.
-- [ ] Preserve per-play identity across pauses; credit observed advancement only; reject stalled/sleep gaps; bound repeat detection to real transitions.
-- [ ] Persist events before sending, remove accepted items by ID without discarding concurrent additions, scope pending events to the signed-in account, retry transient failures, and expose pending/error/auth states.
-- [ ] Guard polls, delayed updates, and artwork results by track identity plus generation. Cancel obsolete work and suppress paused now-playing updates.
-- [ ] Use exact local/remote artist+album artwork matching and invalidate mismatched cache results.
-- [ ] Apply polling settings without resetting current-play state; run focused regression tests.
+- [x] Reproduce initial-seek credit, long gaps, resume duplication, stale work, queued-event removal, and equal-title artwork races with deterministic inputs.
+- [x] Preserve per-play identity across pauses; credit observed advancement only; reject stalled/sleep gaps; bound repeat detection to real transitions.
+- [x] Persist events before sending, remove accepted items by ID without discarding concurrent additions, scope pending events to the signed-in account, retry transient failures, and expose pending/error/auth states.
+- [x] Guard polls, delayed updates, and artwork results by track identity plus generation. Cancel obsolete work and suppress paused now-playing updates.
+- [x] Use exact local/remote artist+album artwork matching and invalidate mismatched cache results.
+- [x] Apply polling settings without resetting current-play state; run focused regression tests.
 
 ## Task 3: Accurate analytics and local persistence
 
 Files: Services/LastFMService.swift; Models/ListeningReport.swift, ScrobbleStats.swift; Views/ReportsView.swift, StatsView.swift; tests.
 
-- [ ] Add failing tests for artist-vs-play totals, top-50 limits, incomplete history, Today, all-time date bounds, zero-on-error, date semantics, clearing history, and export replacement.
-- [ ] Use explicit calendar date ranges and complete paginated recent history; separate bounded chart rendering from data coverage; propagate load errors.
-- [ ] Implement cancellation-aware report loads and bounded chart aggregation; use consistent unique identities and averages.
-- [ ] Isolate mutable response caches and local records; clear/export through the statistics manager using atomic writes.
-- [ ] Ensure Stats/Reports refresh on the app refresh signal; run focused tests.
+- [x] Add failing tests for artist-vs-play totals, top-50 limits, incomplete history, Today, all-time date bounds, zero-on-error, date semantics, clearing history, and export replacement.
+- [x] Use explicit calendar date ranges and complete paginated recent history; separate bounded chart rendering from data coverage; propagate load errors.
+- [x] Implement cancellation-aware report loads and bounded chart aggregation; use consistent unique identities and averages.
+- [x] Isolate mutable response caches and local records; clear/export through the statistics manager using atomic writes.
+- [x] Ensure Stats/Reports refresh on the app refresh signal; run focused tests.
 
 ## Task 4: App integration, modern menu, and cache safety
 
 Files: App/AppState.swift, LastFMApp.swift, Notifications.swift; UI/Views/MenuBarView.swift, ContentView.swift, NowPlayingHeroView.swift, SetupWizardView.swift; UI/Settings/AdvancedSettingsView.swift, AppearanceSettingsView.swift, ScrobblerSettingsView.swift; UI/DesignSystem/CachedAsyncImage.swift, DSComponents.swift, DSTokens.swift, PlayingAnimation.swift; Core/DiskImageCache.swift; Info.plist; README; tests and packaging script.
 
-- [ ] Add regression coverage for image replacement/cancellation, fresh refresh policy, and ranked duplicate names.
-- [ ] Forward nested monitor changes, route onboarding/reset correctly, reuse authenticated clients, and reopen dashboard by stable window ID.
-- [ ] Make menu counts/toggles effective, remove unsupported Custom threshold promises, expose playback pause/errors, and normalize progress visuals.
-- [ ] Replace blocky menu sections with a rounded material surface, album-art header, circular playback controls, rounded count group, and compact rounded action rows. Keep minimum macOS 13 APIs.
-- [ ] Bind all cover displays to the monitor's exact current identity; clear stale images before new requests and reject late completions. Validate downloaded image bodies and synchronize image-cache state.
-- [ ] Package a reproducible bundle with Automation usage text; run full tests/build, review all audit IDs, and push tested milestones.
-- [ ] Back up installed bundle, deploy only a passing build, restart via supported UI, visually inspect artwork/menu/settings/report behavior, and report any untested external interactions.
+- [x] Add regression coverage for image replacement/cancellation, fresh refresh policy, and ranked duplicate names.
+- [x] Forward nested monitor changes, route onboarding/reset correctly, reuse authenticated clients, and reopen dashboard by stable window ID.
+- [x] Make menu counts/toggles effective, remove unsupported Custom threshold promises, expose playback pause/errors, and normalize progress visuals.
+- [x] Replace blocky menu sections with a rounded material surface, album-art header, circular playback controls, rounded count group, and compact rounded action rows. Keep minimum macOS 13 APIs.
+- [x] Bind all cover displays to the monitor's exact current identity; clear stale images before new requests and reject late completions. Validate downloaded image bodies and synchronize image-cache state.
+- [x] Package a reproducible bundle with Automation usage text; run full tests/build, review all audit IDs, and push tested milestones.
+- [x] Back up installed bundle, deploy only a passing build, restart via supported UI, visually inspect artwork/menu/settings/report behavior, and report any untested external interactions.
